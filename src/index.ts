@@ -156,12 +156,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // ── Thread-aware context resolution ────────────────────────────────────
   // First, fetch all new messages to discover the active thread (if any).
   const globalCursor = lastAgentTimestamp[chatJid] || '';
-  const allNewMessages = getMessagesSince(chatJid, globalCursor, ASSISTANT_NAME);
+  const allNewMessages = getMessagesSince(
+    chatJid,
+    globalCursor,
+    ASSISTANT_NAME,
+  );
 
   if (allNewMessages.length === 0) return true;
 
   // Detect whether this channel uses threads (any message carries a thread_id).
-  const latestThreadId = [...allNewMessages].reverse().find((m) => m.thread_id)?.thread_id;
+  const latestThreadId = [...allNewMessages]
+    .reverse()
+    .find((m) => m.thread_id)?.thread_id;
   const isThreadAware = latestThreadId !== undefined;
 
   let missedMessages;
@@ -170,7 +176,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (isThreadAware && latestThreadId) {
     // Use only messages from the active thread as the agent's context.
     cursorKey = `${chatJid}:${latestThreadId}`;
-    missedMessages = getMessagesByThread(chatJid, latestThreadId, ASSISTANT_NAME);
+    missedMessages = getMessagesByThread(
+      chatJid,
+      latestThreadId,
+      ASSISTANT_NAME,
+    );
   } else {
     cursorKey = chatJid;
     missedMessages = allNewMessages;
@@ -201,16 +211,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length, threadId: latestThreadId },
+    {
+      group: group.name,
+      messageCount: missedMessages.length,
+      threadId: latestThreadId,
+    },
     'Processing messages',
   );
 
   // ── Session resolution ─────────────────────────────────────────────────
   // Thread-aware channels get a per-thread Claude session so continuity is
   // maintained within a thread, and each new thread starts fresh.
-  const sessionId = isThreadAware && latestThreadId
-    ? getThreadSession(chatJid, latestThreadId)
-    : sessions[group.folder];
+  const sessionId =
+    isThreadAware && latestThreadId
+      ? getThreadSession(chatJid, latestThreadId)
+      : sessions[group.folder];
 
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -241,7 +256,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             ? result.result
             : JSON.stringify(result.result);
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-        logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+        logger.info(
+          { group: group.name },
+          `Agent output: ${raw.slice(0, 200)}`,
+        );
         if (text) {
           await channel.sendMessage(chatJid, text);
           outputSentToUser = true;

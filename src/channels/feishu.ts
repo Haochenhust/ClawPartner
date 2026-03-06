@@ -3,7 +3,12 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { ASSISTANT_NAME } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
-import { Channel, OnChatMetadata, OnInboundMessage, RegisteredGroup } from '../types.js';
+import {
+  Channel,
+  OnChatMetadata,
+  OnInboundMessage,
+  RegisteredGroup,
+} from '../types.js';
 import { ChannelOpts, registerChannel } from './registry.js';
 
 const FEISHU_BASE_URL = 'https://open.feishu.cn/open-apis';
@@ -53,10 +58,16 @@ export class FeishuChannel implements Channel {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
+        body: JSON.stringify({
+          app_id: this.appId,
+          app_secret: this.appSecret,
+        }),
       },
     );
-    const data = (await res.json()) as { tenant_access_token: string; expire: number };
+    const data = (await res.json()) as {
+      tenant_access_token: string;
+      expire: number;
+    };
     this.tenantAccessToken = data.tenant_access_token;
     this.tokenExpiresAt = Date.now() + (data.expire - 60) * 1000;
     logger.debug('Feishu tenant access token refreshed');
@@ -154,16 +165,24 @@ export class FeishuChannel implements Channel {
     let code: number | undefined;
     try {
       code = (JSON.parse(body) as { code?: number }).code;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     if (code === 230019) {
       // Thread was deleted by the user — fall back to plain chat message
-      logger.warn({ messageId, chatJid }, 'Feishu: thread gone (230019), sending to chat');
+      logger.warn(
+        { messageId, chatJid },
+        'Feishu: thread gone (230019), sending to chat',
+      );
       await this.sendToChat(chatJid, text);
       return;
     }
 
-    logger.error({ messageId, status: res.status, body }, 'Feishu: reply failed');
+    logger.error(
+      { messageId, status: res.status, body },
+      'Feishu: reply failed',
+    );
     throw new Error(`Feishu reply failed: ${res.status}`);
   }
 
@@ -194,7 +213,9 @@ export class FeishuChannel implements Channel {
 
   // ── Inbound event handling ────────────────────────────────────────────────
 
-  private async handleInboundEvent(data: Record<string, unknown>): Promise<void> {
+  private async handleInboundEvent(
+    data: Record<string, unknown>,
+  ): Promise<void> {
     const event = data as Record<string, unknown>;
     const message = event.message as Record<string, unknown> | undefined;
     if (!message) return;
@@ -206,7 +227,8 @@ export class FeishuChannel implements Channel {
     if (!chatId) return;
 
     const chatJid = `${JID_PREFIX}${chatId}`;
-    const chatType = (message.chat_type as string) === 'group' ? 'group' : 'p2p';
+    const chatType =
+      (message.chat_type as string) === 'group' ? 'group' : 'p2p';
     const messageId = (message.message_id as string) ?? '';
     const rootId = (message.root_id as string) || undefined;
     const userId = (senderId?.open_id as string) ?? '';
@@ -227,27 +249,45 @@ export class FeishuChannel implements Channel {
     try {
       const content = JSON.parse((message.content as string) ?? '{}');
       text = content.text ?? '';
-    } catch { text = ''; }
+    } catch {
+      text = '';
+    }
     if (!text) return;
 
     // Translate Feishu @mentions to the canonical trigger format
-    const rawMentions = (message.mentions as Array<Record<string, unknown>>) ?? [];
+    const rawMentions =
+      (message.mentions as Array<Record<string, unknown>>) ?? [];
     for (const m of rawMentions) {
       const name = (m.name as string) ?? '';
       if (name) text = text.replace(`@${name}`, `@${ASSISTANT_NAME}`);
     }
 
     // Store chat metadata for group discovery
-    this.opts.onChatMetadata(chatJid, timestamp, undefined, 'feishu', chatType === 'group');
+    this.opts.onChatMetadata(
+      chatJid,
+      timestamp,
+      undefined,
+      'feishu',
+      chatType === 'group',
+    );
 
     const registeredGroups = this.opts.registeredGroups();
     if (!registeredGroups[chatJid]) {
-      logger.info({ chatJid }, 'Feishu: message from unregistered chat, ignoring');
+      logger.info(
+        { chatJid },
+        'Feishu: message from unregistered chat, ignoring',
+      );
       return;
     }
 
     logger.info(
-      { chatJid, userId, threadId, isNewThread: !rootId, textPreview: text.slice(0, 80) },
+      {
+        chatJid,
+        userId,
+        threadId,
+        isNewThread: !rootId,
+        textPreview: text.slice(0, 80),
+      },
       'Feishu: inbound message',
     );
 
