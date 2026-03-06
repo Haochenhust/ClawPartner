@@ -73,6 +73,12 @@ function createSchema(database: Database.Database): void {
       group_folder TEXT PRIMARY KEY,
       session_id TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS thread_sessions (
+      chat_jid TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      PRIMARY KEY (chat_jid, thread_id)
+    );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -102,6 +108,13 @@ function createSchema(database: Database.Database): void {
     database
       .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
       .run(`${ASSISTANT_NAME}:%`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add thread_id column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE messages ADD COLUMN thread_id TEXT`);
   } catch {
     /* column already exists */
   }
@@ -262,7 +275,7 @@ export function setLastGroupSync(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -272,6 +285,7 @@ export function storeMessage(msg: NewMessage): void {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    msg.thread_id ?? null,
   );
 }
 
@@ -351,6 +365,50 @@ export function getMessagesSince(
   return db
     .prepare(sql)
     .all(chatJid, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
+}
+
+/**
+ * Get all messages belonging to a specific thread, ordered by time.
+ * Used for thread-scoped agent context (e.g. Feishu threads).
+ */
+export function getMessagesByThread(
+  chatJid: string,
+  threadId: string,
+  botPrefix: string,
+): NewMessage[] {
+  const sql = `
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, thread_id
+    FROM messages
+    WHERE chat_jid = ? AND thread_id = ?
+      AND is_bot_message = 0 AND content NOT LIKE ?
+      AND content != '' AND content IS NOT NULL
+    ORDER BY timestamp
+  `;
+  return db
+    .prepare(sql)
+    .all(chatJid, threadId, `${botPrefix}:%`) as NewMessage[];
+}
+
+export function getThreadSession(
+  chatJid: string,
+  threadId: string,
+): string | undefined {
+  const row = db
+    .prepare(
+      'SELECT session_id FROM thread_sessions WHERE chat_jid = ? AND thread_id = ?',
+    )
+    .get(chatJid, threadId) as { session_id: string } | undefined;
+  return row?.session_id;
+}
+
+export function setThreadSession(
+  chatJid: string,
+  threadId: string,
+  sessionId: string,
+): void {
+  db.prepare(
+    'INSERT OR REPLACE INTO thread_sessions (chat_jid, thread_id, session_id) VALUES (?, ?, ?)',
+  ).run(chatJid, threadId, sessionId);
 }
 
 export function createTask(

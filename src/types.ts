@@ -51,6 +51,8 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  /** Thread root message ID, set by thread-aware channels (e.g. Feishu). */
+  thread_id?: string;
 }
 
 export interface ScheduledTask {

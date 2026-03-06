@@ -27,13 +27,16 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getMessagesByThread,
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  getThreadSession,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
   setSession,
+  setThreadSession,
   storeChatMetadata,
   storeMessage,
 } from './db.js';
@@ -150,12 +153,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
-  const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-  const missedMessages = getMessagesSince(
-    chatJid,
-    sinceTimestamp,
-    ASSISTANT_NAME,
-  );
+  // ── Thread-aware context resolution ────────────────────────────────────
+  // First, fetch all new messages to discover the active thread (if any).
+  const globalCursor = lastAgentTimestamp[chatJid] || '';
+  const allNewMessages = getMessagesSince(chatJid, globalCursor, ASSISTANT_NAME);
+
+  if (allNewMessages.length === 0) return true;
+
+  // Detect whether this channel uses threads (any message carries a thread_id).
+  const latestThreadId = [...allNewMessages].reverse().find((m) => m.thread_id)?.thread_id;
+  const isThreadAware = latestThreadId !== undefined;
+
+  let missedMessages;
+  let cursorKey: string; // key into lastAgentTimestamp
+
+  if (isThreadAware && latestThreadId) {
+    // Use only messages from the active thread as the agent's context.
+    cursorKey = `${chatJid}:${latestThreadId}`;
+    missedMessages = getMessagesByThread(chatJid, latestThreadId, ASSISTANT_NAME);
+  } else {
+    cursorKey = chatJid;
+    missedMessages = allNewMessages;
+  }
 
   if (missedMessages.length === 0) return true;
 
@@ -172,17 +191,26 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const prompt = formatMessages(missedMessages);
 
-  // Advance cursor so the piping path in startMessageLoop won't re-fetch
-  // these messages. Save the old cursor so we can roll back on error.
-  const previousCursor = lastAgentTimestamp[chatJid] || '';
-  lastAgentTimestamp[chatJid] =
-    missedMessages[missedMessages.length - 1].timestamp;
+  // Advance cursors. For thread-aware channels we advance both the per-thread
+  // cursor (cursorKey) and the global chatJid cursor so the outer loop
+  // doesn't keep seeing the same messages as "new".
+  const previousCursor = lastAgentTimestamp[cursorKey] || '';
+  const latestTimestamp = missedMessages[missedMessages.length - 1].timestamp;
+  lastAgentTimestamp[cursorKey] = latestTimestamp;
+  if (isThreadAware) lastAgentTimestamp[chatJid] = latestTimestamp;
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    { group: group.name, messageCount: missedMessages.length, threadId: latestThreadId },
     'Processing messages',
   );
+
+  // ── Session resolution ─────────────────────────────────────────────────
+  // Thread-aware channels get a per-thread Claude session so continuity is
+  // maintained within a thread, and each new thread starts fresh.
+  const sessionId = isThreadAware && latestThreadId
+    ? getThreadSession(chatJid, latestThreadId)
+    : sessions[group.folder];
 
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -202,39 +230,42 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
-      if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    async (result) => {
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+        if (text) {
+          await channel.sendMessage(chatJid, text);
+          outputSentToUser = true;
+        }
+        resetIdleTimer();
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
-
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
-
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  });
+      if (result.status === 'success') queue.notifyIdle(chatJid);
+      if (result.status === 'error') hadError = true;
+    },
+    sessionId,
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
+  // Persist session ID (thread-scoped or group-scoped)
+  if (output !== 'error' && !hadError) {
+    const newSessionId = sessions[group.folder]; // runAgent updates sessions[group.folder]
+    if (isThreadAware && latestThreadId && newSessionId) {
+      setThreadSession(chatJid, latestThreadId, newSessionId);
+    }
+  }
+
   if (output === 'error' || hadError) {
-    // If we already sent output to the user, don't roll back the cursor —
-    // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
       logger.warn(
         { group: group.name },
@@ -242,8 +273,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       );
       return true;
     }
-    // Roll back cursor so retries can re-process these messages
-    lastAgentTimestamp[chatJid] = previousCursor;
+    lastAgentTimestamp[cursorKey] = previousCursor;
+    if (isThreadAware) lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
     logger.warn(
       { group: group.name },
@@ -260,9 +291,10 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  overrideSessionId?: string,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  const sessionId = overrideSessionId ?? sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
