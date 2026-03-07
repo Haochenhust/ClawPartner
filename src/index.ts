@@ -587,7 +587,9 @@ async function startMessageLoop(): Promise<void> {
             ? (getThreadSession(chatJid, ipcThreadId) ?? undefined)
             : undefined;
 
-          if (queue.sendMessage(chatJid, formatted, ipcThreadId, ipcSessionId)) {
+          if (
+            queue.sendMessage(chatJid, formatted, ipcThreadId, ipcSessionId)
+          ) {
             logger.debug(
               { chatJid, count: messagesToSend.length, ipcThreadId },
               'Piped messages to active container',
