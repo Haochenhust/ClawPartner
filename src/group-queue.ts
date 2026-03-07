@@ -155,9 +155,16 @@ export class GroupQueue {
 
   /**
    * Send a follow-up message to the active container via IPC file.
+   * threadId and sessionId are passed so the container can detect thread switches
+   * and resume the correct Claude session for the new thread.
    * Returns true if the message was written, false if no active container.
    */
-  sendMessage(groupJid: string, text: string): boolean {
+  sendMessage(
+    groupJid: string,
+    text: string,
+    threadId?: string,
+    sessionId?: string,
+  ): boolean {
     const state = this.getGroup(groupJid);
     if (!state.active || !state.groupFolder || state.isTaskContainer)
       return false;
@@ -169,7 +176,15 @@ export class GroupQueue {
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      const payload: {
+        type: string;
+        text: string;
+        thread_id?: string;
+        session_id?: string;
+      } = { type: 'message', text };
+      if (threadId) payload.thread_id = threadId;
+      if (sessionId) payload.session_id = sessionId;
+      fs.writeFileSync(tempPath, JSON.stringify(payload));
       fs.renameSync(tempPath, filepath);
       return true;
     } catch {

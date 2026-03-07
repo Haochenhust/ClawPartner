@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url';
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  threadId?: string;
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -29,6 +30,12 @@ interface ContainerInput {
   assistantName?: string;
   streamProgress?: boolean;
   secrets?: Record<string, string>;
+}
+
+interface IpcMessage {
+  text: string;
+  threadId?: string;
+  sessionId?: string;
 }
 
 interface ContainerOutput {
@@ -486,23 +493,27 @@ function shouldClose(): boolean {
 
 /**
  * Drain all pending IPC input messages.
- * Returns messages found, or empty array.
+ * Returns structured IpcMessage objects (may carry thread_id / session_id).
  */
-function drainIpcInput(): string[] {
+function drainIpcInput(): IpcMessage[] {
   try {
     fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
     const files = fs.readdirSync(IPC_INPUT_DIR)
       .filter(f => f.endsWith('.json'))
       .sort();
 
-    const messages: string[] = [];
+    const messages: IpcMessage[] = [];
     for (const file of files) {
       const filePath = path.join(IPC_INPUT_DIR, file);
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         fs.unlinkSync(filePath);
         if (data.type === 'message' && data.text) {
-          messages.push(data.text);
+          messages.push({
+            text: data.text,
+            threadId: data.thread_id,
+            sessionId: data.session_id,
+          });
         }
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -518,9 +529,10 @@ function drainIpcInput(): string[] {
 
 /**
  * Wait for a new IPC message or _close sentinel.
- * Returns the messages as a single string, or null if _close.
+ * Returns a structured IpcMessage, or null if _close.
+ * Multiple consecutive messages with the same thread are merged into one.
  */
-function waitForIpcMessage(): Promise<string | null> {
+function waitForIpcMessage(): Promise<IpcMessage | null> {
   return new Promise((resolve) => {
     const poll = () => {
       if (shouldClose()) {
@@ -529,13 +541,29 @@ function waitForIpcMessage(): Promise<string | null> {
       }
       const messages = drainIpcInput();
       if (messages.length > 0) {
-        resolve(messages.join('\n'));
+        // Merge consecutive messages that belong to the same thread
+        const first = messages[0];
+        const merged = messages
+          .filter(m => m.threadId === first.threadId)
+          .map(m => m.text)
+          .join('\n');
+        resolve({ text: merged, threadId: first.threadId, sessionId: first.sessionId });
         return;
       }
       setTimeout(poll, IPC_POLL_MS);
     };
     poll();
   });
+}
+
+interface RunQueryResult {
+  newSessionId?: string;
+  lastAssistantUuid?: string;
+  closedDuringQuery: boolean;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  /** Set when a different-thread IPC message arrived during the query. */
+  pendingSwitch?: IpcMessage;
 }
 
 /**
@@ -553,7 +581,8 @@ async function runQuery(
   resumeAt?: string,
   streamProgress = true,
   containerState: { initShown: boolean } = { initShown: false },
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; totalInputTokens: number; totalOutputTokens: number }> {
+  currentThreadId?: string,
+): Promise<RunQueryResult> {
   const progressState = {
     thinkingNotified: false,
     lastProgressByType: new Map<string, number>(),
@@ -565,6 +594,7 @@ async function runQuery(
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
+  let pendingSwitch: IpcMessage | undefined;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -575,9 +605,19 @@ async function runQuery(
       return;
     }
     const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
+    for (const msg of messages) {
+      // If the message belongs to a different thread, don't pipe it in.
+      // Instead, save it as a pending switch and end the current stream so
+      // the outer loop can start a fresh query with the correct session.
+      if (currentThreadId && msg.threadId && msg.threadId !== currentThreadId) {
+        log(`Thread switch detected (${currentThreadId} → ${msg.threadId}), ending current stream`);
+        pendingSwitch = msg;
+        stream.end();
+        ipcPolling = false;
+        return;
+      }
+      log(`Piping IPC message into active query (${msg.text.length} chars)`);
+      stream.push(msg.text);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -696,7 +736,7 @@ async function runQuery(
   }
 
   ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}${pendingSwitch ? `, pendingSwitch thread=${pendingSwitch.threadId}` : ''}`);
 
   // Send a single cumulative token summary after all results are done
   if (totalInputTokens > 0) {
@@ -706,7 +746,7 @@ async function runQuery(
     });
   }
 
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  return { newSessionId, lastAssistantUuid, closedDuringQuery, totalInputTokens, totalOutputTokens, pendingSwitch };
 }
 
 async function main(): Promise<void> {
@@ -738,6 +778,7 @@ async function main(): Promise<void> {
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
+  let currentThreadId = containerInput.threadId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
@@ -751,7 +792,7 @@ async function main(): Promise<void> {
   const pending = drainIpcInput();
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    prompt += '\n' + pending.join('\n');
+    prompt += '\n' + pending.map(m => m.text).join('\n');
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
@@ -759,9 +800,9 @@ async function main(): Promise<void> {
   const containerState = { initShown: false };
   try {
     while (true) {
-      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
+      log(`Starting query (session: ${sessionId || 'new'}, thread: ${currentThreadId || 'none'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.streamProgress !== false, containerState);
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.streamProgress !== false, containerState, currentThreadId);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -777,6 +818,20 @@ async function main(): Promise<void> {
         break;
       }
 
+      // If a thread switch was detected mid-query, start a fresh query for
+      // the new thread with its own session, without waiting for IPC.
+      if (queryResult.pendingSwitch) {
+        const sw = queryResult.pendingSwitch;
+        log(`Thread switch: ${currentThreadId} → ${sw.threadId}, session: ${sw.sessionId || 'new'}`);
+        // Emit session update for the finished thread before switching
+        writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+        currentThreadId = sw.threadId;
+        sessionId = sw.sessionId;
+        resumeAt = undefined; // fresh start for new thread
+        prompt = sw.text;
+        continue;
+      }
+
       // Emit session update so host can track it
       writeOutput({ status: 'success', result: null, newSessionId: sessionId });
 
@@ -789,8 +844,19 @@ async function main(): Promise<void> {
         break;
       }
 
-      log(`Got new message (${nextMessage.length} chars), starting new query`);
-      prompt = nextMessage;
+      // If the next message is for a different thread, switch session
+      if (currentThreadId && nextMessage.threadId && nextMessage.threadId !== currentThreadId) {
+        log(`Thread switch (idle): ${currentThreadId} → ${nextMessage.threadId}, session: ${nextMessage.sessionId || 'new'}`);
+        currentThreadId = nextMessage.threadId;
+        sessionId = nextMessage.sessionId;
+        resumeAt = undefined;
+      } else if (nextMessage.threadId) {
+        // Same thread: keep session, just update threadId tracking
+        currentThreadId = nextMessage.threadId;
+      }
+
+      log(`Got new message (${nextMessage.text.length} chars), starting new query`);
+      prompt = nextMessage.text;
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

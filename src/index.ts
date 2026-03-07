@@ -382,6 +382,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
     },
     sessionId,
+    latestThreadId,
   );
 
   await channel.setTyping?.(chatJid, false);
@@ -423,6 +424,7 @@ async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   overrideSessionId?: string,
+  threadId?: string,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = overrideSessionId ?? sessions[group.folder];
@@ -469,6 +471,7 @@ async function runAgent(
       {
         prompt,
         sessionId,
+        threadId,
         groupFolder: group.folder,
         chatJid,
         isMain,
@@ -574,9 +577,19 @@ async function startMessageLoop(): Promise<void> {
             allPending.length > 0 ? allPending : groupMessages;
           const formatted = formatMessages(messagesToSend);
 
-          if (queue.sendMessage(chatJid, formatted)) {
+          // Compute thread context for the IPC message so the container can
+          // detect a thread switch and resume the correct Claude session.
+          const latestIpcMsg = [...messagesToSend]
+            .reverse()
+            .find((m) => m.thread_id);
+          const ipcThreadId = latestIpcMsg?.thread_id;
+          const ipcSessionId = ipcThreadId
+            ? (getThreadSession(chatJid, ipcThreadId) ?? undefined)
+            : undefined;
+
+          if (queue.sendMessage(chatJid, formatted, ipcThreadId, ipcSessionId)) {
             logger.debug(
-              { chatJid, count: messagesToSend.length },
+              { chatJid, count: messagesToSend.length, ipcThreadId },
               'Piped messages to active container',
             );
             lastAgentTimestamp[chatJid] =
