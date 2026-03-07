@@ -308,9 +308,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           if (!progressMessageId) {
             // First progress event: create the live message
             try {
-              progressMessageId = await channel.sendMessageGetId(chatJid, fullText);
+              progressMessageId = await channel.sendMessageGetId(
+                chatJid,
+                fullText,
+              );
             } catch (err) {
-              logger.warn({ err }, 'Failed to create live progress message, falling back');
+              logger.warn(
+                { err },
+                'Failed to create live progress message, falling back',
+              );
               await channel.sendMessage(chatJid, result.result);
             }
           } else {
@@ -318,7 +324,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             try {
               await channel.updateMessage(progressMessageId, fullText);
             } catch (err) {
-              logger.warn({ err }, 'Failed to update live progress message, ignoring');
+              logger.warn(
+                { err },
+                'Failed to update live progress message, ignoring',
+              );
             }
           }
         } else {
@@ -346,7 +355,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             try {
               await channel.updateMessage(progressMessageId, fullText);
             } catch (err) {
-              logger.warn({ err }, 'Failed to append result to live message, sending separately');
+              logger.warn(
+                { err },
+                'Failed to append result to live message, sending separately',
+              );
               await channel.sendMessage(chatJid, text);
             }
             // Reset live-message state so a subsequent turn starts fresh

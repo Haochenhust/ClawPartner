@@ -265,20 +265,17 @@ export class FeishuChannel implements Channel {
   async updateMessage(messageId: string, text: string): Promise<void> {
     if (!messageId) return;
     const token = await this.ensureToken();
-    const res = await fetch(
-      `${FEISHU_BASE_URL}/im/v1/messages/${messageId}`,
-      {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          content: this.buildProgressCard(text),
-          msg_type: 'interactive',
-        }),
+    const res = await fetch(`${FEISHU_BASE_URL}/im/v1/messages/${messageId}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
       },
-    );
+      body: JSON.stringify({
+        content: this.buildProgressCard(text),
+        msg_type: 'interactive',
+      }),
+    });
     if (!res.ok) {
       const body = await res.text();
       logger.error(
