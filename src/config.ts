@@ -49,8 +49,12 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
 ); // 10MB default
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
-export const STREAM_PROGRESS = (process.env.STREAM_PROGRESS || 'true') !== 'false';
-export const HEARTBEAT_INTERVAL_MS = parseInt(process.env.HEARTBEAT_INTERVAL_MS || '120000', 10); // 2min default; 0 = disabled
+export const STREAM_PROGRESS =
+  (process.env.STREAM_PROGRESS || 'true') !== 'false';
+export const HEARTBEAT_INTERVAL_MS = parseInt(
+  process.env.HEARTBEAT_INTERVAL_MS || '120000',
+  10,
+); // 2min default; 0 = disabled
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,

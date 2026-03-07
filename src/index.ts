@@ -248,7 +248,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const heartbeatStart = Date.now();
 
   const stopHeartbeat = () => {
-    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
   };
 
   const resetHeartbeat = () => {
@@ -256,7 +259,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!HEARTBEAT_INTERVAL_MS) return;
     heartbeatTimer = setInterval(async () => {
       const mins = Math.round((Date.now() - heartbeatStart) / 60_000);
-      await channel.sendMessage(chatJid, `⏳ 任务仍在处理中（已用时约 ${mins} 分钟）`);
+      await channel.sendMessage(
+        chatJid,
+        `⏳ 任务仍在处理中（已用时约 ${mins} 分钟）`,
+      );
     }, HEARTBEAT_INTERVAL_MS);
   };
 

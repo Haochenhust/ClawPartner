@@ -583,6 +583,8 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -675,7 +677,12 @@ async function runQuery(
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      const resultMsg = message as { modelUsage?: Record<string, { inputTokens: number; outputTokens: number }> };
+      if (resultMsg.modelUsage) {
+        totalInputTokens += Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.inputTokens || 0), 0);
+        totalOutputTokens += Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.outputTokens || 0), 0);
+      }
+      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''} cumInputTokens=${totalInputTokens} cumOutputTokens=${totalOutputTokens}`);
       writeOutput({
         status: 'success',
         result: textResult || null,
@@ -686,6 +693,15 @@ async function runQuery(
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+
+  // Send a single cumulative token summary after all results are done
+  if (totalInputTokens > 0) {
+    writeOutput({
+      status: 'progress',
+      result: `📊 *Token 消耗* | Input: ${totalInputTokens.toLocaleString()} | Output: ${totalOutputTokens.toLocaleString()}`,
+    });
+  }
+
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
