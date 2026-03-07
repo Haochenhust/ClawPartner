@@ -165,6 +165,7 @@ function formatProgress(
   message: SDKMessage,
   state: { thinkingNotified: boolean; lastProgressByType: Map<string, number>; sentToolProgressIds: Set<string> },
   streamProgress: boolean,
+  containerState: { initShown: boolean },
 ): string | null {
   if (!streamProgress) return null;
 
@@ -225,6 +226,8 @@ function formatProgress(
       const msg = message as { subtype?: string; [key: string]: unknown };
       switch (msg.subtype) {
         case 'init': {
+          if (containerState.initShown) return null;
+          containerState.initShown = true;
           const model = String(msg.model ?? '');
           return `🤖 Agent 已启动${model ? ` (${model})` : ''}`;
         }
@@ -549,6 +552,7 @@ async function runQuery(
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
   streamProgress = true,
+  containerState: { initShown: boolean } = { initShown: false },
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; totalInputTokens: number; totalOutputTokens: number }> {
   const progressState = {
     thinkingNotified: false,
@@ -669,7 +673,7 @@ async function runQuery(
     }
 
     // Forward progress messages to host
-    const progress = formatProgress(message, progressState, streamProgress);
+    const progress = formatProgress(message, progressState, streamProgress, containerState);
     if (progress) {
       writeOutput({ status: 'progress', result: progress });
     }
@@ -752,11 +756,12 @@ async function main(): Promise<void> {
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
+  const containerState = { initShown: false };
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.streamProgress !== false);
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.streamProgress !== false, containerState);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
