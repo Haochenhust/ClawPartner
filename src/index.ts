@@ -270,6 +270,26 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  // State for in-place progress+result message (channels that support editing)
+  let progressMessageId: string | null = null;
+  const progressLines: string[] = [];
+  let resultText: string | null = null;
+
+  /**
+   * Build the combined text for the live progress message.
+   * Progress lines are shown first; when the result arrives it is appended
+   * after a visual separator so the two sections are clearly distinguished.
+   */
+  const buildLiveMessage = (): string => {
+    // '---' renders as a horizontal rule in Feishu lark_md cards
+    const SEPARATOR = '\n\n---\n\n';
+    const progressSection = progressLines.join('\n');
+    if (resultText === null) return progressSection;
+    return progressSection
+      ? progressSection + SEPARATOR + resultText
+      : resultText;
+  };
+
   resetHeartbeat();
 
   const output = await runAgent(
@@ -278,12 +298,36 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     chatJid,
     async (result) => {
       if (result.status === 'progress') {
-        resetHeartbeat(); // any progress event means agent is still alive
-        if (result.result) {
+        resetHeartbeat();
+        if (!result.result) return;
+
+        progressLines.push(result.result);
+        const fullText = buildLiveMessage();
+
+        if (channel.sendMessageGetId && channel.updateMessage) {
+          if (!progressMessageId) {
+            // First progress event: create the live message
+            try {
+              progressMessageId = await channel.sendMessageGetId(chatJid, fullText);
+            } catch (err) {
+              logger.warn({ err }, 'Failed to create live progress message, falling back');
+              await channel.sendMessage(chatJid, result.result);
+            }
+          } else {
+            // Subsequent progress events: edit the live message in-place
+            try {
+              await channel.updateMessage(progressMessageId, fullText);
+            } catch (err) {
+              logger.warn({ err }, 'Failed to update live progress message, ignoring');
+            }
+          }
+        } else {
+          // Fallback for channels that don't support editing
           await channel.sendMessage(chatJid, result.result);
         }
         return;
       }
+
       if (result.result) {
         const raw =
           typeof result.result === 'string'
@@ -295,7 +339,23 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           `Agent output: ${raw.slice(0, 200)}`,
         );
         if (text) {
-          await channel.sendMessage(chatJid, text);
+          if (progressMessageId && channel.updateMessage) {
+            // Append result to the existing live message after a separator
+            resultText = text;
+            const fullText = buildLiveMessage();
+            try {
+              await channel.updateMessage(progressMessageId, fullText);
+            } catch (err) {
+              logger.warn({ err }, 'Failed to append result to live message, sending separately');
+              await channel.sendMessage(chatJid, text);
+            }
+            // Reset live-message state so a subsequent turn starts fresh
+            progressMessageId = null;
+            progressLines.length = 0;
+            resultText = null;
+          } else {
+            await channel.sendMessage(chatJid, text);
+          }
           outputSentToUser = true;
         }
         resetIdleTimer();

@@ -92,6 +92,11 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: send a message and return the platform-specific message ID.
+  // Channels that support in-place message editing implement both methods.
+  sendMessageGetId?(jid: string, text: string): Promise<string>;
+  // Optional: edit / replace the content of a previously sent message.
+  updateMessage?(messageId: string, text: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

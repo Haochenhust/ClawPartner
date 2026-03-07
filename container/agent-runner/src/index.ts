@@ -549,7 +549,7 @@ async function runQuery(
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
   streamProgress = true,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; totalInputTokens: number; totalOutputTokens: number }> {
   const progressState = {
     thinkingNotified: false,
     lastProgressByType: new Map<string, number>(),

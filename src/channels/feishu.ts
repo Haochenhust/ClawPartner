@@ -118,12 +118,7 @@ export class FeishuChannel implements Channel {
    * Falls back to a plain chat message when no thread state is available.
    */
   async sendMessage(jid: string, text: string): Promise<void> {
-    const thread = this.activeThread.get(jid);
-    if (thread) {
-      await this.replyInThread(thread.rootMessageId, jid, text);
-    } else {
-      await this.sendToChat(jid, text);
-    }
+    await this.sendRaw(jid, JSON.stringify({ text }), 'text');
   }
 
   async disconnect(): Promise<void> {
@@ -134,14 +129,51 @@ export class FeishuChannel implements Channel {
   // ── Outbound helpers ──────────────────────────────────────────────────────
 
   /**
+   * Build a simple Feishu interactive card containing plain lark_md text.
+   * Cards (interactive msg_type) are the only message type that can be
+   * edited in-place via the PATCH /im/v1/messages/{id} API.
+   */
+  private buildProgressCard(text: string): string {
+    return JSON.stringify({
+      config: { wide_screen_mode: true },
+      elements: [
+        {
+          tag: 'div',
+          text: { tag: 'lark_md', content: text },
+        },
+      ],
+    });
+  }
+
+  /**
+   * Core send helper. Sends to a thread reply or directly to the chat.
+   * @param content  Pre-serialised message content string (JSON for text/card).
+   * @param msgType  Feishu message type: 'text' | 'interactive'.
+   * Returns the new message_id.
+   */
+  private async sendRaw(
+    jid: string,
+    content: string,
+    msgType: 'text' | 'interactive',
+  ): Promise<string> {
+    const thread = this.activeThread.get(jid);
+    if (thread) {
+      return this.replyInThread(thread.rootMessageId, jid, content, msgType);
+    }
+    return this.sendToChat(jid, content, msgType);
+  }
+
+  /**
    * Reply to a message with reply_in_thread=true.
+   * Returns the message_id of the sent reply.
    * If the thread no longer exists (error 230019) falls back to sendToChat.
    */
   private async replyInThread(
     messageId: string,
     chatJid: string,
-    text: string,
-  ): Promise<void> {
+    content: string,
+    msgType: 'text' | 'interactive',
+  ): Promise<string> {
     const token = await this.ensureToken();
     const res = await fetch(
       `${FEISHU_BASE_URL}/im/v1/messages/${messageId}/reply`,
@@ -152,14 +184,17 @@ export class FeishuChannel implements Channel {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          content: JSON.stringify({ text }),
-          msg_type: 'text',
+          content,
+          msg_type: msgType,
           reply_in_thread: 'true',
         }),
       },
     );
 
-    if (res.ok) return;
+    if (res.ok) {
+      const data = (await res.json()) as { data?: { message_id?: string } };
+      return data.data?.message_id ?? '';
+    }
 
     const body = await res.text();
     let code: number | undefined;
@@ -175,8 +210,7 @@ export class FeishuChannel implements Channel {
         { messageId, chatJid },
         'Feishu: thread gone (230019), sending to chat',
       );
-      await this.sendToChat(chatJid, text);
-      return;
+      return this.sendToChat(chatJid, content, msgType);
     }
 
     logger.error(
@@ -186,7 +220,11 @@ export class FeishuChannel implements Channel {
     throw new Error(`Feishu reply failed: ${res.status}`);
   }
 
-  private async sendToChat(jid: string, text: string): Promise<void> {
+  private async sendToChat(
+    jid: string,
+    content: string,
+    msgType: 'text' | 'interactive',
+  ): Promise<string> {
     const chatId = jid.slice(JID_PREFIX.length);
     const token = await this.ensureToken();
     const res = await fetch(
@@ -199,8 +237,8 @@ export class FeishuChannel implements Channel {
         },
         body: JSON.stringify({
           receive_id: chatId,
-          content: JSON.stringify({ text }),
-          msg_type: 'text',
+          content,
+          msg_type: msgType,
         }),
       },
     );
@@ -208,6 +246,46 @@ export class FeishuChannel implements Channel {
       const body = await res.text();
       logger.error({ jid, status: res.status, body }, 'Feishu: send failed');
       throw new Error(`Feishu send failed: ${res.status}`);
+    }
+    const data = (await res.json()) as { data?: { message_id?: string } };
+    return data.data?.message_id ?? '';
+  }
+
+  /**
+   * Send a live progress message as an interactive card and return its message_id.
+   * Cards are the only Feishu message type that supports in-place editing.
+   */
+  async sendMessageGetId(jid: string, text: string): Promise<string> {
+    return this.sendRaw(jid, this.buildProgressCard(text), 'interactive');
+  }
+
+  /**
+   * Edit the content of a previously sent interactive card in-place.
+   */
+  async updateMessage(messageId: string, text: string): Promise<void> {
+    if (!messageId) return;
+    const token = await this.ensureToken();
+    const res = await fetch(
+      `${FEISHU_BASE_URL}/im/v1/messages/${messageId}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          content: this.buildProgressCard(text),
+          msg_type: 'interactive',
+        }),
+      },
+    );
+    if (!res.ok) {
+      const body = await res.text();
+      logger.error(
+        { messageId, status: res.status, body },
+        'Feishu: update failed',
+      );
+      throw new Error(`Feishu update failed: ${res.status}`);
     }
   }
 
