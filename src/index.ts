@@ -3,8 +3,10 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  HEARTBEAT_INTERVAL_MS,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  STREAM_PROGRESS,
   TRIGGER_PATTERN,
 } from './config.js';
 import './channels/index.js';
@@ -241,15 +243,41 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
+  // Heartbeat timer: fallback for when agent is silent for a long time
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  const heartbeatStart = Date.now();
+
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+  };
+
+  const resetHeartbeat = () => {
+    stopHeartbeat();
+    if (!HEARTBEAT_INTERVAL_MS) return;
+    heartbeatTimer = setInterval(async () => {
+      const mins = Math.round((Date.now() - heartbeatStart) / 60_000);
+      await channel.sendMessage(chatJid, `⏳ 任务仍在处理中（已用时约 ${mins} 分钟）`);
+    }, HEARTBEAT_INTERVAL_MS);
+  };
+
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+
+  resetHeartbeat();
 
   const output = await runAgent(
     group,
     prompt,
     chatJid,
     async (result) => {
+      if (result.status === 'progress') {
+        resetHeartbeat(); // any progress event means agent is still alive
+        if (result.result) {
+          await channel.sendMessage(chatJid, result.result);
+        }
+        return;
+      }
       if (result.result) {
         const raw =
           typeof result.result === 'string'
@@ -266,14 +294,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         }
         resetIdleTimer();
       }
-      if (result.status === 'success') queue.notifyIdle(chatJid);
-      if (result.status === 'error') hadError = true;
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+        stopHeartbeat();
+      }
+      if (result.status === 'error') {
+        hadError = true;
+        stopHeartbeat();
+      }
     },
     sessionId,
   );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+  stopHeartbeat();
 
   // Persist session ID (thread-scoped or group-scoped)
   if (output !== 'error' && !hadError) {
@@ -360,6 +395,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        streamProgress: STREAM_PROGRESS,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),

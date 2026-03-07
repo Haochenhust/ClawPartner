@@ -16,7 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
@@ -27,11 +27,12 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  streamProgress?: boolean;
   secrets?: Record<string, string>;
 }
 
 interface ContainerOutput {
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'progress';
   result: string | null;
   newSessionId?: string;
   error?: string;
@@ -116,6 +117,192 @@ function writeOutput(output: ContainerOutput): void {
 
 function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
+}
+
+function truncate(s: string, max = 120): string {
+  s = s.trim();
+  return s.length > max ? s.slice(0, max) + '…' : s;
+}
+
+function formatToolUseBlock(name: string, input: Record<string, unknown>): string {
+  switch (name) {
+    case 'Bash': {
+      const cmd = typeof input.command === 'string' ? input.command : '';
+      const firstLine = cmd.split('\n')[0];
+      return `🔧 Bash: ${truncate(firstLine, 100)}`;
+    }
+    case 'Read':
+      return `📂 Read: ${truncate(String(input.file_path ?? input.path ?? ''), 100)}`;
+    case 'Write':
+      return `✏️ Write: ${truncate(String(input.file_path ?? input.path ?? ''), 100)}`;
+    case 'Edit':
+    case 'MultiEdit':
+      return `✏️ Edit: ${truncate(String(input.file_path ?? input.path ?? ''), 100)}`;
+    case 'Glob':
+      return `🔍 Glob: ${truncate(String(input.pattern ?? ''), 100)}`;
+    case 'Grep':
+      return `🔍 Grep: ${truncate(String(input.pattern ?? ''), 80)}`;
+    case 'WebSearch':
+      return `🌐 WebSearch: ${truncate(String(input.query ?? ''), 100)}`;
+    case 'WebFetch':
+      return `🌐 WebFetch: ${truncate(String(input.url ?? ''), 100)}`;
+    case 'Task':
+      return `🧩 Task: ${truncate(String(input.description ?? input.prompt ?? ''), 100)}`;
+    case 'TodoWrite':
+      return `📋 TodoWrite`;
+    case 'NotebookEdit':
+      return `📓 NotebookEdit: ${truncate(String(input.notebook_path ?? ''), 100)}`;
+    default:
+      return `⚙️ ${name}`;
+  }
+}
+
+/**
+ * Format an SDKMessage into a human-readable progress string.
+ * Returns null if the message should not be forwarded.
+ */
+function formatProgress(
+  message: SDKMessage,
+  state: { thinkingNotified: boolean; lastProgressByType: Map<string, number>; sentToolProgressIds: Set<string> },
+  streamProgress: boolean,
+): string | null {
+  if (!streamProgress) return null;
+
+  const now = Date.now();
+  const THROTTLE_MS = 3000;
+
+  const throttle = (key: string): boolean => {
+    const last = state.lastProgressByType.get(key) ?? 0;
+    if (now - last < THROTTLE_MS) return true;
+    state.lastProgressByType.set(key, now);
+    return false;
+  };
+
+  switch (message.type) {
+    case 'assistant': {
+      state.thinkingNotified = false;
+      const content = (message as { message?: { content?: unknown[] } }).message?.content;
+      if (!Array.isArray(content)) return null;
+      const parts: string[] = [];
+      for (const block of content) {
+        if (
+          block &&
+          typeof block === 'object' &&
+          (block as { type?: string }).type === 'tool_use'
+        ) {
+          const b = block as { name: string; input: Record<string, unknown> };
+          parts.push(formatToolUseBlock(b.name, b.input ?? {}));
+        }
+      }
+      if (parts.length === 0) return null;
+      return parts.join('\n');
+    }
+
+    case 'tool_use_summary': {
+      const summary = (message as { summary?: string }).summary;
+      if (!summary) return null;
+      if (throttle('tool_use_summary')) return null;
+      return summary;
+    }
+
+    case 'tool_progress': {
+      const tp = message as { tool_use_id: string; tool_name: string; elapsed_time_seconds: number };
+      if (tp.elapsed_time_seconds < 10) return null;
+      const key = `tool_progress:${tp.tool_use_id}`;
+      const last = state.lastProgressByType.get(key) ?? 0;
+      if (now - last < 10_000) return null;
+      state.lastProgressByType.set(key, now);
+      return `⏳ ${tp.tool_name} 执行中（已 ${Math.round(tp.elapsed_time_seconds)}s）`;
+    }
+
+    case 'stream_event': {
+      if (state.thinkingNotified) return null;
+      state.thinkingNotified = true;
+      return `💭 正在思考中…`;
+    }
+
+    case 'system': {
+      const msg = message as { subtype?: string; [key: string]: unknown };
+      switch (msg.subtype) {
+        case 'init': {
+          const model = String(msg.model ?? '');
+          return `🤖 Agent 已启动${model ? ` (${model})` : ''}`;
+        }
+        case 'task_started': {
+          const desc = truncate(String(msg.description ?? ''), 100);
+          return `🚀 子任务启动: ${desc}`;
+        }
+        case 'task_progress': {
+          if (throttle('task_progress')) return null;
+          const usage = msg.usage as { tool_uses?: number; duration_ms?: number } | undefined;
+          const tools = usage?.tool_uses ?? 0;
+          const secs = Math.round((usage?.duration_ms ?? 0) / 1000);
+          return `📊 子任务进度: 已调用 ${tools} 个工具，用时 ${secs}s`;
+        }
+        case 'task_notification': {
+          const tn = msg as { status: string; summary: string };
+          const icon = tn.status === 'completed' ? '✅' : '❌';
+          return `${icon} 子任务${tn.status === 'completed' ? '完成' : '失败'}: ${truncate(tn.summary, 100)}`;
+        }
+        case 'compact_boundary': {
+          const meta = msg.compact_metadata as { pre_tokens?: number } | undefined;
+          const tokens = meta?.pre_tokens ?? 0;
+          return `📦 上下文压缩 (${tokens.toLocaleString()} tokens)`;
+        }
+        case 'hook_started': {
+          if (throttle(`hook_started:${msg.hook_name}`)) return null;
+          return `🪝 Hook 启动: ${msg.hook_name}`;
+        }
+        case 'hook_progress': {
+          if (throttle(`hook_progress:${msg.hook_name}`)) return null;
+          return `🪝 Hook 进度: ${msg.hook_name}`;
+        }
+        case 'hook_response': {
+          const hr = msg as { hook_name: string; outcome: string };
+          return `🪝 Hook 完成: ${hr.hook_name} (${hr.outcome})`;
+        }
+        case 'files_persisted': {
+          const files = (msg.files as unknown[]) ?? [];
+          return `💾 已保存 ${files.length} 个文件`;
+        }
+        case 'elicitation_complete': {
+          const server = String(msg.mcp_server_name ?? '');
+          return `📝 MCP 交互完成${server ? `: ${server}` : ''}`;
+        }
+        case 'status': {
+          if (throttle('status')) return null;
+          return `📡 状态: ${msg.status}`;
+        }
+        default:
+          return null;
+      }
+    }
+
+    case 'auth_status': {
+      const as_ = message as { isAuthenticating: boolean; error?: string };
+      if (as_.error) return `🔑 认证失败: ${truncate(as_.error, 80)}`;
+      if (as_.isAuthenticating) return `🔑 认证中…`;
+      return null;
+    }
+
+    case 'rate_limit_event': {
+      const rle = message as { rate_limit_info: { status: string; resetsAt?: number } };
+      const info = rle.rate_limit_info;
+      if (info.status === 'allowed') return null;
+      if (throttle('rate_limit')) return null;
+      const resetsAt = info.resetsAt
+        ? `，预计 ${new Date(info.resetsAt * 1000).toLocaleTimeString()} 恢复`
+        : '';
+      return `⚠️ 限流中${resetsAt}`;
+    }
+
+    case 'result':
+      state.thinkingNotified = false;
+      return null;
+
+    default:
+      return null;
+  }
 }
 
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
@@ -361,7 +548,13 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
+  streamProgress = true,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+  const progressState = {
+    thinkingNotified: false,
+    lastProgressByType: new Map<string, number>(),
+    sentToolProgressIds: new Set<string>(),
+  };
   const stream = new MessageStream();
   stream.push(prompt);
 
@@ -473,6 +666,12 @@ async function runQuery(
       log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
     }
 
+    // Forward progress messages to host
+    const progress = formatProgress(message, progressState, streamProgress);
+    if (progress) {
+      writeOutput({ status: 'progress', result: progress });
+    }
+
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
@@ -541,7 +740,7 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.streamProgress !== false);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }

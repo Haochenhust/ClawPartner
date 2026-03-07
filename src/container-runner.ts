@@ -38,11 +38,12 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  streamProgress?: boolean;
   secrets?: Record<string, string>;
 }
 
 export interface ContainerOutput {
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'progress';
   result: string | null;
   newSessionId?: string;
   error?: string;
@@ -353,8 +354,11 @@ export async function runContainerAgent(
               newSessionId = parsed.newSessionId;
             }
             hadStreamingOutput = true;
-            // Activity detected — reset the hard timeout
-            resetTimeout();
+            // Only reset hard timeout on real results, not progress notifications.
+            // Progress messages are frequent and should not extend the container lifetime.
+            if (parsed.status !== 'progress') {
+              resetTimeout();
+            }
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
             outputChain = outputChain.then(() => onOutput(parsed));
