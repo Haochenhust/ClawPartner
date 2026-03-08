@@ -349,6 +349,18 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'restart_service':
+      // Only main group can restart the service
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized restart_service attempt blocked');
+        break;
+      }
+      logger.info({ sourceGroup }, 'Service restart requested via IPC');
+      // Wait 3s to allow the agent's send_message MCP call to complete
+      // before the host process exits. launchd KeepAlive=true restarts automatically.
+      setTimeout(() => process.exit(0), 3000);
+      break;
+
     case 'register_group':
       // Only main group can register new groups
       if (!isMain) {
