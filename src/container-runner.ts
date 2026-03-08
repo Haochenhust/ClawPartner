@@ -297,7 +297,12 @@ function buildContainerArgs(
  * This makes skills created in one group available to all other groups.
  */
 function syncNewSkillsToGlobal(groupFolder: string): void {
-  const groupSessionsDir = path.join(DATA_DIR, 'sessions', groupFolder, '.claude');
+  const groupSessionsDir = path.join(
+    DATA_DIR,
+    'sessions',
+    groupFolder,
+    '.claude',
+  );
   const perGroupSkillsDir = path.join(groupSessionsDir, 'skills');
   const globalSkillsDir = path.join(DATA_DIR, 'global-skills');
 

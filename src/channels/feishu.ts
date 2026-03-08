@@ -120,7 +120,10 @@ export class FeishuChannel implements Channel {
     const chatId = jid.slice(JID_PREFIX.length);
     try {
       const session = await this.sender.createStreamingCard(text);
-      const msgId = await this.sender.sendCardKitMessage(chatId, session.cardId);
+      const msgId = await this.sender.sendCardKitMessage(
+        chatId,
+        session.cardId,
+      );
       // Use message_id as the key (what's stored in progressMessageId)
       // but also keep track of the card session for streaming updates
       const compositeId = `${CARDKIT_PREFIX}${session.cardId}::${msgId}`;
@@ -133,7 +136,10 @@ export class FeishuChannel implements Channel {
       });
       return compositeId;
     } catch (err) {
-      logger.warn({ err }, 'Feishu: Cardkit creation failed, falling back to PATCH');
+      logger.warn(
+        { err },
+        'Feishu: Cardkit creation failed, falling back to PATCH',
+      );
       return this.sender.sendToChat(chatId, this.sender.buildCard(text));
     }
   }
@@ -184,7 +190,10 @@ export class FeishuChannel implements Channel {
         );
       }
     } catch (err) {
-      logger.warn({ messageId, err }, 'Feishu: Cardkit update failed, ignoring');
+      logger.warn(
+        { messageId, err },
+        'Feishu: Cardkit update failed, ignoring',
+      );
     }
   }
 
@@ -278,17 +287,11 @@ export class FeishuChannel implements Channel {
 
   // ── Reactions ─────────────────────────────────────────────────────────────
 
-  async addReaction(
-    messageId: string,
-    emoji: string,
-  ): Promise<string | null> {
+  async addReaction(messageId: string, emoji: string): Promise<string | null> {
     return this.sender.addReaction(messageId, emoji);
   }
 
-  async removeReaction(
-    messageId: string,
-    reactionId: string,
-  ): Promise<void> {
+  async removeReaction(messageId: string, reactionId: string): Promise<void> {
     return this.sender.removeReaction(messageId, reactionId);
   }
 
@@ -299,7 +302,13 @@ export class FeishuChannel implements Channel {
     const chats = await this.sender.getChatList(token);
     for (const chat of chats) {
       const jid = `${JID_PREFIX}${chat.chatId}`;
-      this.opts.onChatMetadata(jid, new Date().toISOString(), chat.name, 'feishu', true);
+      this.opts.onChatMetadata(
+        jid,
+        new Date().toISOString(),
+        chat.name,
+        'feishu',
+        true,
+      );
     }
     logger.info({ count: chats.length }, 'Feishu: synced groups');
   }

@@ -116,7 +116,9 @@ function extractPostElement(el: FeishuPostElement): string {
 /** Convert a Feishu post (rich text) content JSON to plain Markdown. */
 export function extractRichText(postJson: string): string {
   try {
-    const post = JSON.parse(postJson) as { zh_cn?: FeishuPostContent } | FeishuPostContent;
+    const post = JSON.parse(postJson) as
+      | { zh_cn?: FeishuPostContent }
+      | FeishuPostContent;
     // Post messages may have locale keys like { zh_cn: { content: [...] } }
     const body =
       (post as Record<string, FeishuPostContent>).zh_cn ??
@@ -321,7 +323,10 @@ export function saveAttachment(
     fs.writeFileSync(dest, buffer);
     return dest;
   } catch (err) {
-    logger.warn({ workspaceDir, fileName, err }, 'Feishu: saveAttachment failed');
+    logger.warn(
+      { workspaceDir, fileName, err },
+      'Feishu: saveAttachment failed',
+    );
     return null;
   }
 }
@@ -346,6 +351,9 @@ export function appendConversationLog(
     const entry = `[${time}] ${senderName}: ${text}\n`;
     fs.appendFileSync(filePath, entry, 'utf8');
   } catch (err) {
-    logger.warn({ conversationsDir, err }, 'Feishu: appendConversationLog failed');
+    logger.warn(
+      { conversationsDir, err },
+      'Feishu: appendConversationLog failed',
+    );
   }
 }

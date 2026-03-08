@@ -71,11 +71,14 @@ const queue = new GroupQueue();
 // In-memory map: messageId → { reactionId, triggerMessageId, interactionType }
 // These fields are transient (only needed between message receipt and processing completion)
 // so they don't need to be persisted to the database.
-const messageMetadata = new Map<string, {
-  reactionId?: string;
-  triggerMessageId?: string;
-  interactionType?: 'p2p' | 'group' | 'thread_group';
-}>();
+const messageMetadata = new Map<
+  string,
+  {
+    reactionId?: string;
+    triggerMessageId?: string;
+    interactionType?: 'p2p' | 'group' | 'thread_group';
+  }
+>();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -185,12 +188,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const latestMsg = allNewMessages[allNewMessages.length - 1];
   // DB doesn't store interactionType — retrieve from in-memory metadata
   const latestMeta = messageMetadata.get(latestMsg.id);
-  const interactionType = latestMeta?.interactionType ?? latestMsg.interactionType ?? 'group';
+  const interactionType =
+    latestMeta?.interactionType ?? latestMsg.interactionType ?? 'group';
 
   // For thread_group: isolate context to the active topic thread
-  const latestThreadId = interactionType === 'thread_group'
-    ? (latestMsg.thread_id ?? undefined)
-    : undefined;
+  const latestThreadId =
+    interactionType === 'thread_group'
+      ? (latestMsg.thread_id ?? undefined)
+      : undefined;
   const isThreadAware = latestThreadId !== undefined;
 
   let missedMessages;
@@ -350,7 +355,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         progressLines.push(result.result);
         const fullText = buildLiveMessage();
 
-        if ((channel.sendMessageGetIdWithContext || channel.sendMessageGetId) && channel.updateMessage) {
+        if (
+          (channel.sendMessageGetIdWithContext || channel.sendMessageGetId) &&
+          channel.updateMessage
+        ) {
           if (!progressMessageId) {
             try {
               progressMessageId = await ctxSendGetId(fullText);
@@ -445,18 +453,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   stopHeartbeat();
 
   // Close Cardkit streaming mode if applicable
-  if (progressMessageId && (channel as unknown as { closeStreaming?: (id: string) => Promise<void> }).closeStreaming) {
-    const feishuChannel = channel as unknown as { closeStreaming: (id: string) => Promise<void> };
+  if (
+    progressMessageId &&
+    (channel as unknown as { closeStreaming?: (id: string) => Promise<void> })
+      .closeStreaming
+  ) {
+    const feishuChannel = channel as unknown as {
+      closeStreaming: (id: string) => Promise<void>;
+    };
     feishuChannel
       .closeStreaming(progressMessageId)
-      .catch((err) => logger.warn({ err }, 'Failed to close Cardkit streaming'));
+      .catch((err) =>
+        logger.warn({ err }, 'Failed to close Cardkit streaming'),
+      );
   }
 
   // Clean up: remove reaction if it wasn't already removed in the streaming callback
   // (e.g. container exited without producing output)
   if (!reactionRemoved) {
     const triggerMsg = missedMessages[missedMessages.length - 1];
-    const triggerMeta = triggerMsg ? messageMetadata.get(triggerMsg.id) : undefined;
+    const triggerMeta = triggerMsg
+      ? messageMetadata.get(triggerMsg.id)
+      : undefined;
     if (triggerMeta?.reactionId && triggerMsg?.id && channel.removeReaction) {
       channel
         .removeReaction(triggerMsg.id, triggerMeta.reactionId)

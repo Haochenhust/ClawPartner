@@ -107,8 +107,16 @@ export interface Channel {
   removeReaction?(messageId: string, reactionId: string): Promise<void>;
   // Context-aware send: routes replies based on interaction type
   // (e.g. quoted reply in groups, thread reply in topic groups).
-  sendMessageWithContext?(jid: string, text: string, context: ReplyContext): Promise<void>;
-  sendMessageGetIdWithContext?(jid: string, text: string, context: ReplyContext): Promise<string>;
+  sendMessageWithContext?(
+    jid: string,
+    text: string,
+    context: ReplyContext,
+  ): Promise<void>;
+  sendMessageGetIdWithContext?(
+    jid: string,
+    text: string,
+    context: ReplyContext,
+  ): Promise<string>;
 }
 
 // Callback type that channels use to deliver inbound messages

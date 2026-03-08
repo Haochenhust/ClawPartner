@@ -31,10 +31,10 @@ export class FeishuSender {
         .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
         // [text](url) → <text|url>  (lark hyperlink format in lark_md)
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')
-        // ~~strikethrough~~ → ~~strikethrough~~ (lark supports)
-        // _italic_ → _italic_ (lark supports)
-        // `code` → `code` (lark supports)
-        // ```block``` → ```block``` (lark supports)
+      // ~~strikethrough~~ → ~~strikethrough~~ (lark supports)
+      // _italic_ → _italic_ (lark supports)
+      // `code` → `code` (lark supports)
+      // ```block``` → ```block``` (lark supports)
     );
   }
 
@@ -198,10 +198,7 @@ export class FeishuSender {
   }
 
   /** Remove an emoji reaction from a message. */
-  async removeReaction(
-    messageId: string,
-    reactionId: string,
-  ): Promise<void> {
+  async removeReaction(messageId: string, reactionId: string): Promise<void> {
     try {
       await this.client.im.messageReaction.delete({
         path: { message_id: messageId, reaction_id: reactionId },
@@ -288,10 +285,7 @@ export class FeishuSender {
    * Send a message that references an existing Cardkit card.
    * Returns the message_id of the sent message.
    */
-  async sendCardKitMessage(
-    chatId: string,
-    cardId: string,
-  ): Promise<string> {
+  async sendCardKitMessage(chatId: string, cardId: string): Promise<string> {
     const res = await this.client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
@@ -319,7 +313,10 @@ export class FeishuSender {
         data: { content, sequence },
       });
     } catch (err) {
-      logger.warn({ cardId, elementId, err }, 'Feishu: updateCardKitElement failed');
+      logger.warn(
+        { cardId, elementId, err },
+        'Feishu: updateCardKitElement failed',
+      );
       throw err;
     }
   }
@@ -354,7 +351,10 @@ export class FeishuSender {
         },
       });
       // SDK returns image_key at top level for this endpoint
-      const r = res as unknown as { image_key?: string; data?: { image_key?: string } };
+      const r = res as unknown as {
+        image_key?: string;
+        data?: { image_key?: string };
+      };
       return r.image_key ?? r.data?.image_key ?? '';
     } catch (err) {
       logger.warn({ err }, 'Feishu: uploadImage failed');
@@ -389,7 +389,10 @@ export class FeishuSender {
       const ab = await res.arrayBuffer();
       return Buffer.from(ab);
     } catch (err) {
-      logger.warn({ messageId, fileKey, err }, 'Feishu: downloadResource error');
+      logger.warn(
+        { messageId, fileKey, err },
+        'Feishu: downloadResource error',
+      );
       return null;
     }
   }
@@ -428,10 +431,9 @@ export class FeishuSender {
     token: string,
   ): Promise<Array<{ chatId: string; name: string }>> {
     try {
-      const res = await fetch(
-        `${FEISHU_BASE_URL}/im/v1/chats?page_size=100`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
+      const res = await fetch(`${FEISHU_BASE_URL}/im/v1/chats?page_size=100`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (!res.ok) return [];
       const json = (await res.json()) as {
         code: number;
