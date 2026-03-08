@@ -64,8 +64,10 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// \b doesn't work as a word boundary after CJK characters in JavaScript.
+// Use a lookahead that matches whitespace, punctuation, or end-of-string.
 export const TRIGGER_PATTERN = new RegExp(
-  `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
+  `^@${escapeRegex(ASSISTANT_NAME)}(?=[\\s,;!?。，！？]|$)`,
   'i',
 );
 

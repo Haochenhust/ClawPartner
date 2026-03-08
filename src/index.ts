@@ -53,7 +53,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { Channel, NewMessage, RegisteredGroup, ReplyContext } from './types.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -67,6 +67,15 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+
+// In-memory map: messageId → { reactionId, triggerMessageId, interactionType }
+// These fields are transient (only needed between message receipt and processing completion)
+// so they don't need to be persisted to the database.
+const messageMetadata = new Map<string, {
+  reactionId?: string;
+  triggerMessageId?: string;
+  interactionType?: 'p2p' | 'group' | 'thread_group';
+}>();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -155,8 +164,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
-  // ── Thread-aware context resolution ────────────────────────────────────
-  // First, fetch all new messages to discover the active thread (if any).
+  // ── Context resolution — three interaction types ───────────────────────
+  //
+  // p2p / group:    one group-level session; all messages since last cursor
+  // thread_group:   per-topic session; only messages from the active thread
+  //
+  // We infer interaction type from the most-recent new message's interactionType
+  // field (set by FeishuChannel.handleInboundEvent).  For non-Feishu channels
+  // (WhatsApp, Telegram …) interactionType is undefined → treated as group.
+
   const globalCursor = lastAgentTimestamp[chatJid] || '';
   const allNewMessages = getMessagesSince(
     chatJid,
@@ -166,17 +182,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (allNewMessages.length === 0) return true;
 
-  // Detect whether this channel uses threads (any message carries a thread_id).
-  const latestThreadId = [...allNewMessages]
-    .reverse()
-    .find((m) => m.thread_id)?.thread_id;
+  const latestMsg = allNewMessages[allNewMessages.length - 1];
+  // DB doesn't store interactionType — retrieve from in-memory metadata
+  const latestMeta = messageMetadata.get(latestMsg.id);
+  const interactionType = latestMeta?.interactionType ?? latestMsg.interactionType ?? 'group';
+
+  // For thread_group: isolate context to the active topic thread
+  const latestThreadId = interactionType === 'thread_group'
+    ? (latestMsg.thread_id ?? undefined)
+    : undefined;
   const isThreadAware = latestThreadId !== undefined;
 
   let missedMessages;
-  let cursorKey: string; // key into lastAgentTimestamp
+  let cursorKey: string;
 
   if (isThreadAware && latestThreadId) {
-    // Use only messages from the active thread as the agent's context.
     cursorKey = `${chatJid}:${latestThreadId}`;
     missedMessages = getMessagesByThread(
       chatJid,
@@ -260,16 +280,41 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!HEARTBEAT_INTERVAL_MS) return;
     heartbeatTimer = setInterval(async () => {
       const mins = Math.round((Date.now() - heartbeatStart) / 60_000);
-      await channel.sendMessage(
-        chatJid,
-        `⏳ 任务仍在处理中（已用时约 ${mins} 分钟）`,
-      );
+      await ctxSend(`⏳ 任务仍在处理中（已用时约 ${mins} 分钟）`);
     }, HEARTBEAT_INTERVAL_MS);
   };
 
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+  let reactionRemoved = false;
+
+  // Build reply context so sends are routed to the correct place
+  // (quoted reply in groups, thread reply in topic groups, direct in p2p).
+  const triggerMsgId = latestMeta?.triggerMessageId;
+  const replyContext: ReplyContext = {
+    type: interactionType as ReplyContext['type'],
+    triggerMessageId: triggerMsgId,
+  };
+
+  const ctxSend = async (text: string): Promise<void> => {
+    if (channel.sendMessageWithContext) {
+      await channel.sendMessageWithContext(chatJid, text, replyContext);
+    } else {
+      await channel.sendMessage(chatJid, text);
+    }
+  };
+
+  const ctxSendGetId = async (text: string): Promise<string> => {
+    if (channel.sendMessageGetIdWithContext) {
+      return channel.sendMessageGetIdWithContext(chatJid, text, replyContext);
+    }
+    if (channel.sendMessageGetId) {
+      return channel.sendMessageGetId(chatJid, text);
+    }
+    await channel.sendMessage(chatJid, text);
+    return '';
+  };
 
   // State for in-place progress+result message (channels that support editing)
   let progressMessageId: string | null = null;
@@ -305,23 +350,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         progressLines.push(result.result);
         const fullText = buildLiveMessage();
 
-        if (channel.sendMessageGetId && channel.updateMessage) {
+        if ((channel.sendMessageGetIdWithContext || channel.sendMessageGetId) && channel.updateMessage) {
           if (!progressMessageId) {
-            // First progress event: create the live message
             try {
-              progressMessageId = await channel.sendMessageGetId(
-                chatJid,
-                fullText,
-              );
+              progressMessageId = await ctxSendGetId(fullText);
             } catch (err) {
               logger.warn(
                 { err },
                 'Failed to create live progress message, falling back',
               );
-              await channel.sendMessage(chatJid, result.result);
+              await ctxSend(result.result);
             }
           } else {
-            // Subsequent progress events: edit the live message in-place
             try {
               await channel.updateMessage(progressMessageId, fullText);
             } catch (err) {
@@ -332,8 +372,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             }
           }
         } else {
-          // Fallback for channels that don't support editing
-          await channel.sendMessage(chatJid, result.result);
+          await ctxSend(result.result);
         }
         return;
       }
@@ -360,16 +399,31 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
                 { err },
                 'Failed to append result to live message, sending separately',
               );
-              await channel.sendMessage(chatJid, text);
+              await ctxSend(text);
             }
             // Reset live-message state so a subsequent turn starts fresh
             progressMessageId = null;
             progressLines.length = 0;
             resultText = null;
           } else {
-            await channel.sendMessage(chatJid, text);
+            await ctxSend(text);
           }
           outputSentToUser = true;
+
+          // Remove receipt reaction as soon as the first result is sent
+          if (!reactionRemoved) {
+            const tMsg = missedMessages[missedMessages.length - 1];
+            const tMeta = tMsg ? messageMetadata.get(tMsg.id) : undefined;
+            if (tMeta?.reactionId && tMsg?.id && channel.removeReaction) {
+              reactionRemoved = true;
+              channel
+                .removeReaction(tMsg.id, tMeta.reactionId)
+                .catch((err) =>
+                  logger.warn({ err }, 'Failed to remove receipt reaction'),
+                );
+              messageMetadata.delete(tMsg.id);
+            }
+          }
         }
         resetIdleTimer();
       }
@@ -389,6 +443,29 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
   stopHeartbeat();
+
+  // Close Cardkit streaming mode if applicable
+  if (progressMessageId && (channel as unknown as { closeStreaming?: (id: string) => Promise<void> }).closeStreaming) {
+    const feishuChannel = channel as unknown as { closeStreaming: (id: string) => Promise<void> };
+    feishuChannel
+      .closeStreaming(progressMessageId)
+      .catch((err) => logger.warn({ err }, 'Failed to close Cardkit streaming'));
+  }
+
+  // Clean up: remove reaction if it wasn't already removed in the streaming callback
+  // (e.g. container exited without producing output)
+  if (!reactionRemoved) {
+    const triggerMsg = missedMessages[missedMessages.length - 1];
+    const triggerMeta = triggerMsg ? messageMetadata.get(triggerMsg.id) : undefined;
+    if (triggerMeta?.reactionId && triggerMsg?.id && channel.removeReaction) {
+      channel
+        .removeReaction(triggerMsg.id, triggerMeta.reactionId)
+        .catch((err) =>
+          logger.warn({ err }, 'Failed to remove receipt reaction'),
+        );
+    }
+    if (triggerMsg) messageMetadata.delete(triggerMsg.id);
+  }
 
   // Thread→session persistence is now handled by runAgent via threadSessions
   // output from the container, which covers all threads seen during the
@@ -691,6 +768,14 @@ async function main(): Promise<void> {
         }
       }
       storeMessage(msg);
+      // Stash transient metadata that the DB doesn't store
+      if (msg.reactionId || msg.triggerMessageId || msg.interactionType) {
+        messageMetadata.set(msg.id, {
+          reactionId: msg.reactionId,
+          triggerMessageId: msg.triggerMessageId,
+          interactionType: msg.interactionType,
+        });
+      }
     },
     onChatMetadata: (
       chatJid: string,
@@ -700,6 +785,21 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    onAutoRegister: (chatJid: string, isGroup: boolean) => {
+      // Derive a safe folder name from the JID: "feishu:oc_abc123" → "feishu_oc_abc123"
+      const sanitized = chatJid.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const folder = sanitized.slice(0, 64); // cap length for filesystem safety
+      // Use a human-readable name initially; syncGroups will fill in the real name later
+      const chatId = chatJid.includes(':') ? chatJid.split(':')[1] : chatJid;
+      registerGroup(chatJid, {
+        name: chatId,
+        folder,
+        trigger: `@${ASSISTANT_NAME}`,
+        added_at: new Date().toISOString(),
+        requiresTrigger: isGroup,
+        isMain: false,
+      });
+    },
   };
 
   // Create and connect all registered channels.

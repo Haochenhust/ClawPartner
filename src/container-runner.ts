@@ -143,20 +143,54 @@ function buildVolumeMounts(
     );
   }
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  // ── Global skills sync ─────────────────────────────────────────────────
+  // Priority order: container/skills/ (built-in) → data/global-skills/ → per-group
+  //
+  // 1. Seed data/global-skills/ from container/skills/ if a skill is missing
+  // 2. Copy all global-skills/ into per-group .claude/skills/ (every container start)
+  const builtinSkillsSrc = path.join(process.cwd(), 'container', 'skills');
+  const globalSkillsDir = path.join(DATA_DIR, 'global-skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
+
+  fs.mkdirSync(globalSkillsDir, { recursive: true });
+  fs.mkdirSync(skillsDst, { recursive: true });
+
+  // Seed built-in skills into global-skills/ (won't overwrite user-created ones)
+  if (fs.existsSync(builtinSkillsSrc)) {
+    for (const skillDir of fs.readdirSync(builtinSkillsSrc)) {
+      const srcDir = path.join(builtinSkillsSrc, skillDir);
       if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
+      const dstDir = path.join(globalSkillsDir, skillDir);
+      if (!fs.existsSync(dstDir)) {
+        fs.cpSync(srcDir, dstDir, { recursive: true });
+      }
     }
+  }
+
+  // Distribute all global skills into this group's .claude/skills/
+  for (const skillDir of fs.readdirSync(globalSkillsDir)) {
+    const srcDir = path.join(globalSkillsDir, skillDir);
+    if (!fs.statSync(srcDir).isDirectory()) continue;
+    const dstDir = path.join(skillsDst, skillDir);
+    fs.cpSync(srcDir, dstDir, { recursive: true });
   }
   mounts.push({
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
+    readonly: false,
+  });
+
+  // ── Global memory mount ─────────────────────────────────────────────────
+  // All containers share /workspace/memory (read-write) for SOUL.md, USER.md,
+  // cross-group knowledge (with privacy labels), and episode summaries.
+  const globalMemoryDir = path.join(DATA_DIR, 'global-memory');
+  fs.mkdirSync(globalMemoryDir, { recursive: true });
+  // Seed initial sub-directories
+  fs.mkdirSync(path.join(globalMemoryDir, 'knowledge'), { recursive: true });
+  fs.mkdirSync(path.join(globalMemoryDir, 'episodes'), { recursive: true });
+  mounts.push({
+    hostPath: globalMemoryDir,
+    containerPath: '/workspace/memory',
     readonly: false,
   });
 
@@ -255,6 +289,36 @@ function buildContainerArgs(
   args.push(CONTAINER_IMAGE);
 
   return args;
+}
+
+/**
+ * After a container exits, scan per-group skills and promote any newly-created
+ * skills (not yet in global-skills/) to data/global-skills/.
+ * This makes skills created in one group available to all other groups.
+ */
+function syncNewSkillsToGlobal(groupFolder: string): void {
+  const groupSessionsDir = path.join(DATA_DIR, 'sessions', groupFolder, '.claude');
+  const perGroupSkillsDir = path.join(groupSessionsDir, 'skills');
+  const globalSkillsDir = path.join(DATA_DIR, 'global-skills');
+
+  if (!fs.existsSync(perGroupSkillsDir)) return;
+
+  try {
+    for (const skillDir of fs.readdirSync(perGroupSkillsDir)) {
+      const srcDir = path.join(perGroupSkillsDir, skillDir);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      const dstDir = path.join(globalSkillsDir, skillDir);
+      if (!fs.existsSync(dstDir)) {
+        fs.cpSync(srcDir, dstDir, { recursive: true });
+        logger.info(
+          { skill: skillDir, groupFolder },
+          'New skill promoted to global-skills',
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn({ groupFolder, err }, 'syncNewSkillsToGlobal failed');
+  }
 }
 
 export async function runContainerAgent(
@@ -561,6 +625,9 @@ export async function runContainerAgent(
         });
         return;
       }
+
+      // Sync any new skills the agent created back to global-skills/
+      syncNewSkillsToGlobal(group.folder);
 
       // Streaming mode: wait for output chain to settle, return completion marker
       if (onOutput) {

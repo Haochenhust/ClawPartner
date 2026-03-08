@@ -53,6 +53,12 @@ export interface NewMessage {
   is_bot_message?: boolean;
   /** Thread root message ID, set by thread-aware channels (e.g. Feishu). */
   thread_id?: string;
+  /** Reaction ID added on receipt (e.g. hourglass ⏳). Removed after processing. */
+  reactionId?: string;
+  /** Original trigger message ID for reply routing (Feishu). */
+  triggerMessageId?: string;
+  /** Feishu interaction type: p2p | group | thread_group. */
+  interactionType?: 'p2p' | 'group' | 'thread_group';
 }
 
 export interface ScheduledTask {
@@ -81,6 +87,11 @@ export interface TaskRunLog {
 
 // --- Channel abstraction ---
 
+export interface ReplyContext {
+  type: 'p2p' | 'group' | 'thread_group';
+  triggerMessageId?: string;
+}
+
 export interface Channel {
   name: string;
   connect(): Promise<void>;
@@ -88,15 +99,16 @@ export interface Channel {
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
-  // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
-  // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
-  // Optional: send a message and return the platform-specific message ID.
-  // Channels that support in-place message editing implement both methods.
   sendMessageGetId?(jid: string, text: string): Promise<string>;
-  // Optional: edit / replace the content of a previously sent message.
   updateMessage?(messageId: string, text: string): Promise<void>;
+  addReaction?(messageId: string, emoji: string): Promise<string | null>;
+  removeReaction?(messageId: string, reactionId: string): Promise<void>;
+  // Context-aware send: routes replies based on interaction type
+  // (e.g. quoted reply in groups, thread reply in topic groups).
+  sendMessageWithContext?(jid: string, text: string, context: ReplyContext): Promise<void>;
+  sendMessageGetIdWithContext?(jid: string, text: string, context: ReplyContext): Promise<string>;
 }
 
 // Callback type that channels use to deliver inbound messages
