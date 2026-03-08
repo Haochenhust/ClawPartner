@@ -352,7 +352,10 @@ export async function processTaskIpc(
     case 'restart_service':
       // Only main group can restart the service
       if (!isMain) {
-        logger.warn({ sourceGroup }, 'Unauthorized restart_service attempt blocked');
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized restart_service attempt blocked',
+        );
         break;
       }
       logger.info({ sourceGroup }, 'Service restart requested via IPC');
