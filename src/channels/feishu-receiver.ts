@@ -8,6 +8,7 @@
 import fs from 'fs';
 import path from 'path';
 
+import { appendConversationLog } from '../conversation-log.js';
 import { logger } from '../logger.js';
 import {
   FeishuAudioContent,
@@ -345,29 +346,4 @@ export function saveAttachment(
   }
 }
 
-// ── Conversation log writer ───────────────────────────────────────────────────
-
-/**
- * Append a formatted conversation entry to the group's daily log file.
- * Format: [HH:MM] SenderName: text
- */
-export function appendConversationLog(
-  conversationsDir: string,
-  senderName: string,
-  text: string,
-  timestamp: string,
-): void {
-  try {
-    fs.mkdirSync(conversationsDir, { recursive: true });
-    const date = timestamp.slice(0, 10); // YYYY-MM-DD
-    const time = timestamp.slice(11, 16); // HH:MM
-    const filePath = path.join(conversationsDir, `${date}.md`);
-    const entry = `[${time}] ${senderName}: ${text}\n`;
-    fs.appendFileSync(filePath, entry, 'utf8');
-  } catch (err) {
-    logger.warn(
-      { conversationsDir, err },
-      'Feishu: appendConversationLog failed',
-    );
-  }
-}
+export { appendConversationLog };

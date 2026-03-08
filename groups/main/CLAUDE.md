@@ -36,7 +36,9 @@ When working as a sub-agent or teammate, only use `send_message` if instructed t
 
 ## Memory
 
-The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
+The `conversations/daily/` folder contains chronological daily logs. Use it to reconstruct timelines.
+
+The `conversations/archives/` folder contains compaction-time archived conversation snapshots. Use it to recover older sessions that may have been compacted away.
 
 When you learn something important:
 - Create files for structured data (e.g., `customers.md`, `preferences.md`)

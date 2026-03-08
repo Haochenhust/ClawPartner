@@ -16,40 +16,25 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
-  threadId?: string;
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
-  streamProgress?: boolean;
   secrets?: Record<string, string>;
 }
 
-interface IpcMessage {
-  text: string;
-  threadId?: string;
-  sessionId?: string;
-}
-
 interface ContainerOutput {
-  status: 'success' | 'error' | 'progress';
+  status: 'success' | 'error';
   result: string | null;
   newSessionId?: string;
   error?: string;
-  /** All thread→session mappings accumulated during this container's lifetime. */
-  threadSessions?: Record<string, string>;
-  /** Token usage for this result (only present on status='success' with a non-null result). */
-  inputTokens?: number;
-  outputTokens?: number;
-  /** Wall-clock time from query start to this result, in milliseconds. */
-  elapsedMs?: number;
 }
 
 interface SessionEntry {
@@ -133,195 +118,6 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
-function truncate(s: string, max = 120): string {
-  s = s.trim();
-  return s.length > max ? s.slice(0, max) + '…' : s;
-}
-
-function formatToolUseBlock(name: string, input: Record<string, unknown>): string {
-  switch (name) {
-    case 'Bash': {
-      const cmd = typeof input.command === 'string' ? input.command : '';
-      const firstLine = cmd.split('\n')[0];
-      return `🔧 Bash: ${truncate(firstLine, 100)}`;
-    }
-    case 'Read':
-      return `📂 Read: ${truncate(String(input.file_path ?? input.path ?? ''), 100)}`;
-    case 'Write':
-      return `✏️ Write: ${truncate(String(input.file_path ?? input.path ?? ''), 100)}`;
-    case 'Edit':
-    case 'MultiEdit':
-      return `✏️ Edit: ${truncate(String(input.file_path ?? input.path ?? ''), 100)}`;
-    case 'Glob':
-      return `🔍 Glob: ${truncate(String(input.pattern ?? ''), 100)}`;
-    case 'Grep':
-      return `🔍 Grep: ${truncate(String(input.pattern ?? ''), 80)}`;
-    case 'WebSearch':
-      return `🌐 WebSearch: ${truncate(String(input.query ?? ''), 100)}`;
-    case 'WebFetch':
-      return `🌐 WebFetch: ${truncate(String(input.url ?? ''), 100)}`;
-    case 'Task':
-      return `🧩 Task: ${truncate(String(input.description ?? input.prompt ?? ''), 100)}`;
-    case 'TodoWrite':
-      return `📋 TodoWrite`;
-    case 'NotebookEdit':
-      return `📓 NotebookEdit: ${truncate(String(input.notebook_path ?? ''), 100)}`;
-    default:
-      return `⚙️ ${name}`;
-  }
-}
-
-/**
- * Format an SDKMessage into a human-readable progress string.
- * Returns null if the message should not be forwarded.
- */
-function formatProgress(
-  message: SDKMessage,
-  state: { thinkingNotified: boolean; lastProgressByType: Map<string, number>; sentToolProgressIds: Set<string> },
-  streamProgress: boolean,
-  containerState: { initShown: boolean },
-): string | null {
-  if (!streamProgress) return null;
-
-  const now = Date.now();
-  const THROTTLE_MS = 3000;
-
-  const throttle = (key: string): boolean => {
-    const last = state.lastProgressByType.get(key) ?? 0;
-    if (now - last < THROTTLE_MS) return true;
-    state.lastProgressByType.set(key, now);
-    return false;
-  };
-
-  switch (message.type) {
-    case 'assistant': {
-      state.thinkingNotified = false;
-      const content = (message as { message?: { content?: unknown[] } }).message?.content;
-      if (!Array.isArray(content)) return null;
-      const parts: string[] = [];
-      for (const block of content) {
-        if (
-          block &&
-          typeof block === 'object' &&
-          (block as { type?: string }).type === 'tool_use'
-        ) {
-          const b = block as { name: string; input: Record<string, unknown> };
-          parts.push(formatToolUseBlock(b.name, b.input ?? {}));
-        }
-      }
-      if (parts.length === 0) return null;
-      return parts.join('\n');
-    }
-
-    case 'tool_use_summary': {
-      const summary = (message as { summary?: string }).summary;
-      if (!summary) return null;
-      if (throttle('tool_use_summary')) return null;
-      return summary;
-    }
-
-    case 'tool_progress': {
-      const tp = message as { tool_use_id: string; tool_name: string; elapsed_time_seconds: number };
-      if (tp.elapsed_time_seconds < 10) return null;
-      const key = `tool_progress:${tp.tool_use_id}`;
-      const last = state.lastProgressByType.get(key) ?? 0;
-      if (now - last < 10_000) return null;
-      state.lastProgressByType.set(key, now);
-      return `⏳ ${tp.tool_name} 执行中（已 ${Math.round(tp.elapsed_time_seconds)}s）`;
-    }
-
-    case 'stream_event': {
-      if (state.thinkingNotified) return null;
-      state.thinkingNotified = true;
-      return `💭 正在思考中…`;
-    }
-
-    case 'system': {
-      const msg = message as { subtype?: string; [key: string]: unknown };
-      switch (msg.subtype) {
-        case 'init': {
-          if (containerState.initShown) return null;
-          containerState.initShown = true;
-          const model = String(msg.model ?? '');
-          return `🤖 Agent 已启动${model ? ` (${model})` : ''}`;
-        }
-        case 'task_started': {
-          const desc = truncate(String(msg.description ?? ''), 100);
-          return `🚀 子任务启动: ${desc}`;
-        }
-        case 'task_progress': {
-          if (throttle('task_progress')) return null;
-          const usage = msg.usage as { tool_uses?: number; duration_ms?: number } | undefined;
-          const tools = usage?.tool_uses ?? 0;
-          const secs = Math.round((usage?.duration_ms ?? 0) / 1000);
-          return `📊 子任务进度: 已调用 ${tools} 个工具，用时 ${secs}s`;
-        }
-        case 'task_notification': {
-          const tn = msg as { status: string; summary: string };
-          const icon = tn.status === 'completed' ? '✅' : '❌';
-          return `${icon} 子任务${tn.status === 'completed' ? '完成' : '失败'}: ${truncate(tn.summary, 100)}`;
-        }
-        case 'compact_boundary': {
-          const meta = msg.compact_metadata as { pre_tokens?: number } | undefined;
-          const tokens = meta?.pre_tokens ?? 0;
-          return `📦 上下文压缩 (${tokens.toLocaleString()} tokens)`;
-        }
-        case 'hook_started': {
-          if (throttle(`hook_started:${msg.hook_name}`)) return null;
-          return `🪝 Hook 启动: ${msg.hook_name}`;
-        }
-        case 'hook_progress': {
-          if (throttle(`hook_progress:${msg.hook_name}`)) return null;
-          return `🪝 Hook 进度: ${msg.hook_name}`;
-        }
-        case 'hook_response': {
-          const hr = msg as { hook_name: string; outcome: string };
-          return `🪝 Hook 完成: ${hr.hook_name} (${hr.outcome})`;
-        }
-        case 'files_persisted': {
-          const files = (msg.files as unknown[]) ?? [];
-          return `💾 已保存 ${files.length} 个文件`;
-        }
-        case 'elicitation_complete': {
-          const server = String(msg.mcp_server_name ?? '');
-          return `📝 MCP 交互完成${server ? `: ${server}` : ''}`;
-        }
-        case 'status': {
-          if (throttle('status')) return null;
-          return `📡 状态: ${msg.status}`;
-        }
-        default:
-          return null;
-      }
-    }
-
-    case 'auth_status': {
-      const as_ = message as { isAuthenticating: boolean; error?: string };
-      if (as_.error) return `🔑 认证失败: ${truncate(as_.error, 80)}`;
-      if (as_.isAuthenticating) return `🔑 认证中…`;
-      return null;
-    }
-
-    case 'rate_limit_event': {
-      const rle = message as { rate_limit_info: { status: string; resetsAt?: number } };
-      const info = rle.rate_limit_info;
-      if (info.status === 'allowed') return null;
-      if (throttle('rate_limit')) return null;
-      const resetsAt = info.resetsAt
-        ? `，预计 ${new Date(info.resetsAt * 1000).toLocaleTimeString()} 恢复`
-        : '';
-      return `⚠️ 限流中${resetsAt}`;
-    }
-
-    case 'result':
-      state.thinkingNotified = false;
-      return null;
-
-    default:
-      return null;
-  }
-}
-
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
   const projectDir = path.dirname(transcriptPath);
   const indexPath = path.join(projectDir, 'sessions-index.json');
@@ -345,7 +141,7 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
 }
 
 /**
- * Archive the full transcript to conversations/archives/ before compaction.
+ * Archive the full transcript to conversations/ before compaction.
  */
 function createPreCompactHook(assistantName?: string): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -370,7 +166,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       const summary = getSessionSummary(sessionId, transcriptPath);
       const name = summary ? sanitizeFilename(summary) : generateFallbackName();
 
-      const conversationsDir = '/workspace/group/conversations/archives';
+      const conversationsDir = '/workspace/group/conversations';
       fs.mkdirSync(conversationsDir, { recursive: true });
 
       const date = new Date().toISOString().split('T')[0];
@@ -500,27 +296,23 @@ function shouldClose(): boolean {
 
 /**
  * Drain all pending IPC input messages.
- * Returns structured IpcMessage objects (may carry thread_id / session_id).
+ * Returns messages found, or empty array.
  */
-function drainIpcInput(): IpcMessage[] {
+function drainIpcInput(): string[] {
   try {
     fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
     const files = fs.readdirSync(IPC_INPUT_DIR)
       .filter(f => f.endsWith('.json'))
       .sort();
 
-    const messages: IpcMessage[] = [];
+    const messages: string[] = [];
     for (const file of files) {
       const filePath = path.join(IPC_INPUT_DIR, file);
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         fs.unlinkSync(filePath);
         if (data.type === 'message' && data.text) {
-          messages.push({
-            text: data.text,
-            threadId: data.thread_id,
-            sessionId: data.session_id,
-          });
+          messages.push(data.text);
         }
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -536,10 +328,9 @@ function drainIpcInput(): IpcMessage[] {
 
 /**
  * Wait for a new IPC message or _close sentinel.
- * Returns a structured IpcMessage, or null if _close.
- * Multiple consecutive messages with the same thread are merged into one.
+ * Returns the messages as a single string, or null if _close.
  */
-function waitForIpcMessage(): Promise<IpcMessage | null> {
+function waitForIpcMessage(): Promise<string | null> {
   return new Promise((resolve) => {
     const poll = () => {
       if (shouldClose()) {
@@ -548,13 +339,7 @@ function waitForIpcMessage(): Promise<IpcMessage | null> {
       }
       const messages = drainIpcInput();
       if (messages.length > 0) {
-        // Merge consecutive messages that belong to the same thread
-        const first = messages[0];
-        const merged = messages
-          .filter(m => m.threadId === first.threadId)
-          .map(m => m.text)
-          .join('\n');
-        resolve({ text: merged, threadId: first.threadId, sessionId: first.sessionId });
+        resolve(messages.join('\n'));
         return;
       }
       setTimeout(poll, IPC_POLL_MS);
@@ -569,16 +354,6 @@ function waitForIpcMessage(): Promise<IpcMessage | null> {
  * allowing agent teams subagents to run to completion.
  * Also pipes IPC messages into the stream during the query.
  */
-interface RunQueryResult {
-  newSessionId?: string;
-  lastAssistantUuid?: string;
-  closedDuringQuery: boolean;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  /** Set when a different-thread IPC message arrived during the query. */
-  pendingSwitch?: IpcMessage;
-}
-
 async function runQuery(
   prompt: string,
   sessionId: string | undefined,
@@ -586,22 +361,13 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-  streamProgress = true,
-  containerState: { initShown: boolean } = { initShown: false },
-  currentThreadId?: string,
-): Promise<RunQueryResult> {
-  const progressState = {
-    thinkingNotified: false,
-    lastProgressByType: new Map<string, number>(),
-    sentToolProgressIds: new Set<string>(),
-  };
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
-  let pendingSwitch: IpcMessage | undefined;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -612,31 +378,18 @@ async function runQuery(
       return;
     }
     const messages = drainIpcInput();
-    for (const msg of messages) {
-      // If the message belongs to a different thread, don't pipe it in.
-      // Instead, save it as a pending switch and end the current stream so
-      // the outer loop can start a fresh query with the correct session.
-      if (currentThreadId && msg.threadId && msg.threadId !== currentThreadId) {
-        log(`Thread switch detected (${currentThreadId} → ${msg.threadId}), ending current stream`);
-        pendingSwitch = msg;
-        stream.end();
-        ipcPolling = false;
-        return;
-      }
-      log(`Piping IPC message into active query (${msg.text.length} chars)`);
-      stream.push(msg.text);
+    for (const text of messages) {
+      log(`Piping IPC message into active query (${text.length} chars)`);
+      stream.push(text);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
   setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
 
-  const queryStartTime = Date.now();
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -679,7 +432,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__gmail__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -694,6 +448,10 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        gmail: {
+          command: 'npx',
+          args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
         },
       },
       hooks: {
@@ -720,42 +478,21 @@ async function runQuery(
       log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
     }
 
-    // Forward progress messages to host
-    const progress = formatProgress(message, progressState, streamProgress, containerState);
-    if (progress) {
-      writeOutput({ status: 'progress', result: progress });
-    }
-
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      const resultMsg = message as { modelUsage?: Record<string, { inputTokens: number; outputTokens: number }> };
-      let resultInputTokens = 0;
-      let resultOutputTokens = 0;
-      if (resultMsg.modelUsage) {
-        resultInputTokens = Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.inputTokens || 0), 0);
-        resultOutputTokens = Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.outputTokens || 0), 0);
-        totalInputTokens += resultInputTokens;
-        totalOutputTokens += resultOutputTokens;
-      }
-      const elapsedMs = Date.now() - queryStartTime;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''} cumInputTokens=${totalInputTokens} cumOutputTokens=${totalOutputTokens} elapsedMs=${elapsedMs}`);
-      // Flush result immediately so the user doesn't wait for the idle timeout
+      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
       writeOutput({
         status: 'success',
         result: textResult || null,
-        newSessionId,
-        inputTokens: textResult ? resultInputTokens : undefined,
-        outputTokens: textResult ? resultOutputTokens : undefined,
-        elapsedMs: textResult ? elapsedMs : undefined,
+        newSessionId
       });
     }
   }
 
   ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}${pendingSwitch ? `, pendingSwitch thread=${pendingSwitch.threadId}` : ''}`);
-
-  return { newSessionId, lastAssistantUuid, closedDuringQuery, totalInputTokens, totalOutputTokens, pendingSwitch };
+  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+  return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
 async function main(): Promise<void> {
@@ -787,13 +524,6 @@ async function main(): Promise<void> {
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
-  let currentThreadId = containerInput.threadId;
-  // In-memory map of threadId → sessionId so we can resume the correct session
-  // when switching back to a previously-seen thread within this container's lifetime.
-  const threadSessionMap = new Map<string, string>();
-  if (currentThreadId && sessionId) {
-    threadSessionMap.set(currentThreadId, sessionId);
-  }
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
@@ -807,27 +537,18 @@ async function main(): Promise<void> {
   const pending = drainIpcInput();
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    prompt += '\n' + pending.map(m => m.text).join('\n');
+    prompt += '\n' + pending.join('\n');
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
-  const containerState = { initShown: false };
-  let sessionTotalInputTokens = 0;
-  let sessionTotalOutputTokens = 0;
   try {
     while (true) {
-      log(`Starting query (session: ${sessionId || 'new'}, thread: ${currentThreadId || 'none'}, resumeAt: ${resumeAt || 'latest'})...`);
+      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.streamProgress !== false, containerState, currentThreadId);
-      sessionTotalInputTokens += queryResult.totalInputTokens;
-      sessionTotalOutputTokens += queryResult.totalOutputTokens;
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
-        // Persist this thread's session so we can resume it later
-        if (currentThreadId) {
-          threadSessionMap.set(currentThreadId, sessionId);
-        }
       }
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
@@ -839,19 +560,6 @@ async function main(): Promise<void> {
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
         break;
-      }
-
-      // If a thread switch was detected mid-query, start a fresh query for
-      // the new thread with its own session, without waiting for IPC.
-      if (queryResult.pendingSwitch) {
-        const sw = queryResult.pendingSwitch;
-        const switchToSession = sw.threadId ? threadSessionMap.get(sw.threadId) : undefined;
-        log(`Thread switch: ${currentThreadId} → ${sw.threadId}, session: ${switchToSession || 'new'}`);
-        currentThreadId = sw.threadId;
-        sessionId = switchToSession;
-        resumeAt = undefined;
-        prompt = sw.text;
-        continue;
       }
 
       // Emit session update so host can track it
@@ -866,39 +574,16 @@ async function main(): Promise<void> {
         break;
       }
 
-      // If the next message is for a different thread, switch session
-      if (currentThreadId && nextMessage.threadId && nextMessage.threadId !== currentThreadId) {
-        const switchToSession = threadSessionMap.get(nextMessage.threadId);
-        log(`Thread switch (idle): ${currentThreadId} → ${nextMessage.threadId}, session: ${switchToSession || 'new'}`);
-        currentThreadId = nextMessage.threadId;
-        sessionId = switchToSession;
-        resumeAt = undefined;
-      } else if (nextMessage.threadId) {
-        currentThreadId = nextMessage.threadId;
-      }
-
-      log(`Got new message (${nextMessage.text.length} chars), starting new query`);
-      prompt = nextMessage.text;
-    }
-
-
-
-    // Emit all thread→session mappings so the host can persist them to DB
-    if (threadSessionMap.size > 0) {
-      const threadSessions = Object.fromEntries(threadSessionMap);
-      log(`Emitting ${threadSessionMap.size} thread→session mappings`);
-      writeOutput({ status: 'success', result: null, newSessionId: sessionId, threadSessions });
+      log(`Got new message (${nextMessage.length} chars), starting new query`);
+      prompt = nextMessage;
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    // Still try to emit thread→session mappings on error
-    const threadSessions = threadSessionMap.size > 0 ? Object.fromEntries(threadSessionMap) : undefined;
     writeOutput({
       status: 'error',
       result: null,
       newSessionId: sessionId,
-      threadSessions,
       error: errorMessage
     });
     process.exit(1);

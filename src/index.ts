@@ -3,12 +3,14 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  GROUPS_DIR,
   HEARTBEAT_INTERVAL_MS,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   STREAM_PROGRESS,
   TRIGGER_PATTERN,
 } from './config.js';
+import { appendConversationLog } from './conversation-log.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -222,8 +224,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // ── LLM provider switch commands (/kimi, /claude) ────────────────────────
   // Intercept before trigger check so they work in every group without needing
   // the @<bot> mention. Only the last message in the batch is checked.
+  // Strip optional @<name> mention prefix so group-chat messages like
+  // "@石原里美 /kimi" are treated the same as plain "/kimi" in p2p.
   const lastMsgForCmd = missedMessages[missedMessages.length - 1];
-  const cmdText = lastMsgForCmd?.content?.trim() ?? '';
+  const cmdText = (lastMsgForCmd?.content?.trim() ?? '').replace(/^@\S+\s*/, '').trim();
   if (cmdText === '/kimi' || cmdText === '/claude') {
     const provider: LlmProvider = cmdText === '/kimi' ? 'kimi' : 'claude';
     setLlmProvider(group.folder, provider);
@@ -532,6 +536,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           }
           outputSentToUser = true;
 
+          // Log bot reply to daily conversation file (strip stats footer)
+          const replyForLog = stripped || '';
+          if (replyForLog) {
+            const conversationsDir = path.join(
+              GROUPS_DIR,
+              group.folder,
+              'conversations',
+            );
+            appendConversationLog(
+              conversationsDir,
+              ASSISTANT_NAME,
+              replyForLog,
+              new Date().toISOString(),
+            );
+          }
+
           // Remove all pending receipt reactions for this chat.
           // When the container is reused for follow-up messages, the original
           // missedMessages closure is stale, so we scan messageMetadata instead.
@@ -815,7 +835,7 @@ async function startMessageLoop(): Promise<void> {
           // When a container is already running, messages bypass processGroupMessages
           // and get piped directly here. Intercept /kimi and /claude before piping.
           const lastMsgToSend = messagesToSend[messagesToSend.length - 1];
-          const pipedCmdText = lastMsgToSend?.content?.trim() ?? '';
+          const pipedCmdText = (lastMsgToSend?.content?.trim() ?? '').replace(/^@\S+\s*/, '').trim();
           if (pipedCmdText === '/kimi' || pipedCmdText === '/claude') {
             const provider: LlmProvider =
               pipedCmdText === '/kimi' ? 'kimi' : 'claude';
