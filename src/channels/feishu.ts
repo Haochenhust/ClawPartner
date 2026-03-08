@@ -31,6 +31,7 @@ import {
   isDuplicate,
   markSeen,
   parseInboundEvent,
+  saveAttachment,
   setCachedUserName,
 } from './feishu-receiver.js';
 import { ParsedMessage } from './feishu-types.js';
@@ -453,6 +454,45 @@ export class FeishuChannel implements Channel {
       }
     }
 
+    // Download and save image attachments for agent processing
+    const group = this.opts.registeredGroups()[parsed.chatJid];
+    if (parsed.messageType === 'image' && parsed.attachments.length > 0 && group) {
+      const groupDir = path.join(GROUPS_DIR, group.folder);
+      const token = await this.getToken();
+      for (const attachment of parsed.attachments) {
+        if (attachment.type === 'image' && attachment.imageKey) {
+          try {
+            const buffer = await this.sender.downloadResource(
+              parsed.messageId,
+              attachment.imageKey,
+              'image',
+              token,
+            );
+            if (buffer) {
+              const fileName = `${attachment.imageKey}.png`;
+              const localPath = saveAttachment(buffer, groupDir, fileName);
+              if (localPath) {
+                // Replace placeholder with actual path for agent to read
+                text = text.replace(
+                  attachment.placeholder,
+                  `[图片已保存到: ${localPath}]`,
+                );
+                logger.info(
+                  { messageId: parsed.messageId, imageKey: attachment.imageKey, path: localPath },
+                  'Feishu: image downloaded and saved',
+                );
+              }
+            }
+          } catch (err) {
+            logger.warn(
+              { messageId: parsed.messageId, imageKey: attachment.imageKey, err },
+              'Feishu: failed to download image',
+            );
+          }
+        }
+      }
+    }
+
     // Notify chat metadata discovery
     this.opts.onChatMetadata(
       parsed.chatJid,
@@ -488,8 +528,7 @@ export class FeishuChannel implements Channel {
       'OneSecond',
     );
 
-    // Append to daily conversation log
-    const group = this.opts.registeredGroups()[parsed.chatJid];
+    // Append to daily conversation log (reuse group fetched earlier)
     if (group) {
       const groupDir = path.join(GROUPS_DIR, group.folder);
       const conversationsDir = path.join(groupDir, 'conversations');
