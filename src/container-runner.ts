@@ -35,7 +35,6 @@ export interface ContainerInput {
   prompt: string;
   sessionId?: string;
   threadId?: string;
-  provider?: 'claude' | 'kimi';
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -398,7 +397,6 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     const provider = getLlmProvider(group.folder);
-    input.provider = provider;
     input.secrets = readSecrets(provider);
     logger.debug({ group: group.name, provider }, 'LLM provider for this run');
     container.stdin.write(JSON.stringify(input));
