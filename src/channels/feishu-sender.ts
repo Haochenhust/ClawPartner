@@ -363,7 +363,10 @@ export class FeishuSender {
         data: { partial_element: JSON.stringify(partial), sequence },
       });
     } catch (err) {
-      logger.warn({ cardId, elementId, err }, 'Feishu: patchCardElement failed');
+      logger.warn(
+        { cardId, elementId, err },
+        'Feishu: patchCardElement failed',
+      );
     }
   }
 

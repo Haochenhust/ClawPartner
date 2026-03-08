@@ -412,16 +412,23 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               await ctxSend(text);
             }
             // Close streaming mode now that the result is in
-            const hasCloseMethod = !!(channel as unknown as { closeStreaming?: unknown }).closeStreaming;
+            const hasCloseMethod = !!(
+              channel as unknown as { closeStreaming?: unknown }
+            ).closeStreaming;
             logger.info(
               { streamingCardId, hasCloseMethod },
               'Attempting to close Cardkit streaming',
             );
             if (streamingCardId && hasCloseMethod) {
-              const fc = channel as unknown as { closeStreaming: (id: string) => Promise<void> };
+              const fc = channel as unknown as {
+                closeStreaming: (id: string) => Promise<void>;
+              };
               try {
                 await fc.closeStreaming(streamingCardId);
-                logger.info({ streamingCardId }, 'Cardkit streaming closed successfully');
+                logger.info(
+                  { streamingCardId },
+                  'Cardkit streaming closed successfully',
+                );
               } catch (err) {
                 logger.warn({ err }, 'Failed to close Cardkit streaming');
               }
@@ -441,7 +448,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             const tMsg = missedMessages[missedMessages.length - 1];
             const tMeta = tMsg ? messageMetadata.get(tMsg.id) : undefined;
             logger.debug(
-              { msgId: tMsg?.id, hasReactionId: !!tMeta?.reactionId, hasRemoveReaction: !!channel.removeReaction, metadataSize: messageMetadata.size },
+              {
+                msgId: tMsg?.id,
+                hasReactionId: !!tMeta?.reactionId,
+                hasRemoveReaction: !!channel.removeReaction,
+                metadataSize: messageMetadata.size,
+              },
               'Reaction removal check',
             );
             if (tMeta?.reactionId && tMsg?.id && channel.removeReaction) {

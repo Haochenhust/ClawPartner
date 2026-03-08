@@ -41,8 +41,8 @@ const CARDKIT_PREFIX = 'ck:'; // prefix to distinguish cardkit card IDs from mes
 interface CardkitSession {
   cardId: string;
   resultElementId: string;
-  progressElementId: string;  // inner markdown element ID
-  progressPanelId: string;    // outer collapsible_panel element ID
+  progressElementId: string; // inner markdown element ID
+  progressPanelId: string; // outer collapsible_panel element ID
   sequence: number;
   progressLines: string[];
 }
@@ -286,13 +286,23 @@ export class FeishuChannel implements Channel {
 
     try {
       const session = await this.sender.createStreamingCard(text);
-      const cardContent = JSON.stringify({ type: 'card', data: { card_id: session.cardId } });
+      const cardContent = JSON.stringify({
+        type: 'card',
+        data: { card_id: session.cardId },
+      });
 
       let msgId: string;
       if (context.type === 'group' && context.triggerMessageId) {
-        msgId = await this.sender.replyToMessage(context.triggerMessageId, cardContent);
+        msgId = await this.sender.replyToMessage(
+          context.triggerMessageId,
+          cardContent,
+        );
       } else if (context.type === 'thread_group' && context.triggerMessageId) {
-        msgId = await this.sender.replyInThread(context.triggerMessageId, chatId, cardContent);
+        msgId = await this.sender.replyInThread(
+          context.triggerMessageId,
+          chatId,
+          cardContent,
+        );
       } else {
         msgId = await this.sender.sendToChat(chatId, cardContent);
       }
@@ -308,7 +318,10 @@ export class FeishuChannel implements Channel {
       });
       return compositeId;
     } catch (err) {
-      logger.warn({ err }, 'Feishu: Cardkit creation failed (context), falling back to plain card');
+      logger.warn(
+        { err },
+        'Feishu: Cardkit creation failed (context), falling back to plain card',
+      );
       switch (context.type) {
         case 'p2p':
           return this.sendToChat(jid, text);
