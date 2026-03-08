@@ -345,10 +345,14 @@ export class FeishuChannel implements Channel {
     try {
       const token = await this.getToken();
       const info = await this.sender.getUserInfo(openId, token);
+      if (!info) {
+        logger.warn({ openId }, 'Feishu: getUserInfo returned null (check contact:user.base:readonly permission)');
+      }
       const name = info?.name ?? openId;
       setCachedUserName(openId, name);
       return name;
-    } catch {
+    } catch (err) {
+      logger.warn({ err, openId }, 'Feishu: resolveUserName failed');
       return openId;
     }
   }

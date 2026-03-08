@@ -412,14 +412,22 @@ export class FeishuSender {
         `${FEISHU_BASE_URL}/contact/v3/users/${openId}?user_id_type=open_id`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
-      if (!res.ok) return null;
+      if (!res.ok) {
+        logger.warn({ openId, status: res.status }, 'Feishu: getUserInfo HTTP error');
+        return null;
+      }
       const json = (await res.json()) as {
         code: number;
+        msg?: string;
         data?: { user?: FeishuUserInfo };
       };
-      if (json.code !== 0) return null;
+      if (json.code !== 0) {
+        logger.warn({ openId, code: json.code, msg: json.msg }, 'Feishu: getUserInfo API error');
+        return null;
+      }
       return json.data?.user ?? null;
-    } catch {
+    } catch (err) {
+      logger.warn({ err, openId }, 'Feishu: getUserInfo exception');
       return null;
     }
   }
