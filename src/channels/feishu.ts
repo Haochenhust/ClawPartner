@@ -118,7 +118,7 @@ export class FeishuChannel implements Channel {
    * Falls back to a plain chat message when no thread state is available.
    */
   async sendMessage(jid: string, text: string): Promise<void> {
-    await this.sendRaw(jid, JSON.stringify({ text }), 'text');
+    await this.sendRaw(jid, this.buildProgressCard(text), 'interactive');
   }
 
   async disconnect(): Promise<void> {

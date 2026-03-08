@@ -43,6 +43,8 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  /** All thread→session mappings accumulated during this container's lifetime. */
+  threadSessions?: Record<string, string>;
 }
 
 interface SessionEntry {
@@ -556,6 +558,12 @@ function waitForIpcMessage(): Promise<IpcMessage | null> {
   });
 }
 
+/**
+ * Run a single query and stream results via writeOutput.
+ * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
+ * allowing agent teams subagents to run to completion.
+ * Also pipes IPC messages into the stream during the query.
+ */
 interface RunQueryResult {
   newSessionId?: string;
   lastAssistantUuid?: string;
@@ -566,12 +574,6 @@ interface RunQueryResult {
   pendingSwitch?: IpcMessage;
 }
 
-/**
- * Run a single query and stream results via writeOutput.
- * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
- * allowing agent teams subagents to run to completion.
- * Also pipes IPC messages into the stream during the query.
- */
 async function runQuery(
   prompt: string,
   sessionId: string | undefined,
@@ -727,24 +729,13 @@ async function runQuery(
         totalOutputTokens += Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.outputTokens || 0), 0);
       }
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''} cumInputTokens=${totalInputTokens} cumOutputTokens=${totalOutputTokens}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
+      // Flush result immediately so the user doesn't wait for the idle timeout
+      writeOutput({ status: 'success', result: textResult || null, newSessionId });
     }
   }
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}${pendingSwitch ? `, pendingSwitch thread=${pendingSwitch.threadId}` : ''}`);
-
-  // Send a single cumulative token summary after all results are done
-  if (totalInputTokens > 0) {
-    writeOutput({
-      status: 'progress',
-      result: `📊 *Token 消耗* | Input: ${totalInputTokens.toLocaleString()} | Output: ${totalOutputTokens.toLocaleString()}`,
-    });
-  }
 
   return { newSessionId, lastAssistantUuid, closedDuringQuery, totalInputTokens, totalOutputTokens, pendingSwitch };
 }
@@ -779,6 +770,12 @@ async function main(): Promise<void> {
 
   let sessionId = containerInput.sessionId;
   let currentThreadId = containerInput.threadId;
+  // In-memory map of threadId → sessionId so we can resume the correct session
+  // when switching back to a previously-seen thread within this container's lifetime.
+  const threadSessionMap = new Map<string, string>();
+  if (currentThreadId && sessionId) {
+    threadSessionMap.set(currentThreadId, sessionId);
+  }
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
@@ -798,13 +795,21 @@ async function main(): Promise<void> {
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   const containerState = { initShown: false };
+  let sessionTotalInputTokens = 0;
+  let sessionTotalOutputTokens = 0;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, thread: ${currentThreadId || 'none'}, resumeAt: ${resumeAt || 'latest'})...`);
 
       const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, containerInput.streamProgress !== false, containerState, currentThreadId);
+      sessionTotalInputTokens += queryResult.totalInputTokens;
+      sessionTotalOutputTokens += queryResult.totalOutputTokens;
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
+        // Persist this thread's session so we can resume it later
+        if (currentThreadId) {
+          threadSessionMap.set(currentThreadId, sessionId);
+        }
       }
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
@@ -822,12 +827,11 @@ async function main(): Promise<void> {
       // the new thread with its own session, without waiting for IPC.
       if (queryResult.pendingSwitch) {
         const sw = queryResult.pendingSwitch;
-        log(`Thread switch: ${currentThreadId} → ${sw.threadId}, session: ${sw.sessionId || 'new'}`);
-        // Emit session update for the finished thread before switching
-        writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+        const switchToSession = sw.threadId ? threadSessionMap.get(sw.threadId) : undefined;
+        log(`Thread switch: ${currentThreadId} → ${sw.threadId}, session: ${switchToSession || 'new'}`);
         currentThreadId = sw.threadId;
-        sessionId = sw.sessionId;
-        resumeAt = undefined; // fresh start for new thread
+        sessionId = switchToSession;
+        resumeAt = undefined;
         prompt = sw.text;
         continue;
       }
@@ -846,25 +850,43 @@ async function main(): Promise<void> {
 
       // If the next message is for a different thread, switch session
       if (currentThreadId && nextMessage.threadId && nextMessage.threadId !== currentThreadId) {
-        log(`Thread switch (idle): ${currentThreadId} → ${nextMessage.threadId}, session: ${nextMessage.sessionId || 'new'}`);
+        const switchToSession = threadSessionMap.get(nextMessage.threadId);
+        log(`Thread switch (idle): ${currentThreadId} → ${nextMessage.threadId}, session: ${switchToSession || 'new'}`);
         currentThreadId = nextMessage.threadId;
-        sessionId = nextMessage.sessionId;
+        sessionId = switchToSession;
         resumeAt = undefined;
       } else if (nextMessage.threadId) {
-        // Same thread: keep session, just update threadId tracking
         currentThreadId = nextMessage.threadId;
       }
 
       log(`Got new message (${nextMessage.text.length} chars), starting new query`);
       prompt = nextMessage.text;
     }
+
+    // Emit a single token summary for the entire session (all turns combined)
+    if (sessionTotalInputTokens > 0) {
+      writeOutput({
+        status: 'progress',
+        result: `📊 *Token 消耗* | Input: ${sessionTotalInputTokens.toLocaleString()} | Output: ${sessionTotalOutputTokens.toLocaleString()}`,
+      });
+    }
+
+    // Emit all thread→session mappings so the host can persist them to DB
+    if (threadSessionMap.size > 0) {
+      const threadSessions = Object.fromEntries(threadSessionMap);
+      log(`Emitting ${threadSessionMap.size} thread→session mappings`);
+      writeOutput({ status: 'success', result: null, newSessionId: sessionId, threadSessions });
+    }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
+    // Still try to emit thread→session mappings on error
+    const threadSessions = threadSessionMap.size > 0 ? Object.fromEntries(threadSessionMap) : undefined;
     writeOutput({
       status: 'error',
       result: null,
       newSessionId: sessionId,
+      threadSessions,
       error: errorMessage
     });
     process.exit(1);

@@ -48,6 +48,8 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  /** All thread→session mappings accumulated during this container's lifetime. */
+  threadSessions?: Record<string, string>;
 }
 
 interface VolumeMount {
@@ -217,6 +219,9 @@ function readSecrets(): Record<string, string> {
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
+    // Feishu credentials — needed by feishu-cli skills inside the container
+    'FEISHU_APP_ID',
+    'FEISHU_APP_SECRET',
   ]);
 }
 

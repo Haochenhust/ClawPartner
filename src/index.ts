@@ -223,11 +223,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // ── Session resolution ─────────────────────────────────────────────────
   // Thread-aware channels get a per-thread Claude session so continuity is
-  // maintained within a thread, and each new thread starts fresh.
-  const sessionId =
-    isThreadAware && latestThreadId
-      ? getThreadSession(chatJid, latestThreadId)
-      : sessions[group.folder];
+  // maintained within a thread, and each new thread starts fresh (undefined).
+  // Non-thread-aware channels always reuse the group-wide session.
+  const sessionId = isThreadAware && latestThreadId
+    ? (getThreadSession(chatJid, latestThreadId) ?? undefined) // undefined = fresh start for new threads
+    : (sessions[group.folder] ?? undefined);                   // fallback to group session
 
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -389,13 +389,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
   stopHeartbeat();
 
-  // Persist session ID (thread-scoped or group-scoped)
-  if (output !== 'error' && !hadError) {
-    const newSessionId = sessions[group.folder]; // runAgent updates sessions[group.folder]
-    if (isThreadAware && latestThreadId && newSessionId) {
-      setThreadSession(chatJid, latestThreadId, newSessionId);
-    }
-  }
+  // Thread→session persistence is now handled by runAgent via threadSessions
+  // output from the container, which covers all threads seen during the
+  // container's lifetime (including mid-query thread switches).
 
   if (output === 'error' || hadError) {
     if (outputSentToUser) {
@@ -427,7 +423,10 @@ async function runAgent(
   threadId?: string,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = overrideSessionId ?? sessions[group.folder];
+  // Use exactly the session ID resolved by the caller — no silent fallback.
+  // For thread-aware channels, undefined means a fresh session for a new thread.
+  // For non-thread-aware channels, the caller already provides sessions[group.folder].
+  const sessionId = overrideSessionId;
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -454,12 +453,22 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
+  const persistThreadSessions = (ts: Record<string, string>) => {
+    for (const [tid, sid] of Object.entries(ts)) {
+      setThreadSession(chatJid, tid, sid);
+    }
+    logger.debug({ group: group.name, count: Object.keys(ts).length }, 'Persisted thread→session mappings');
+  };
+
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
+        }
+        if (output.threadSessions) {
+          persistThreadSessions(output.threadSessions);
         }
         await onOutput(output);
       }
@@ -486,6 +495,9 @@ async function runAgent(
     if (output.newSessionId) {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
+    }
+    if (output.threadSessions) {
+      persistThreadSessions(output.threadSessions);
     }
 
     if (output.status === 'error') {
