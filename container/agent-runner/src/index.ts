@@ -30,6 +30,7 @@ interface ContainerInput {
   assistantName?: string;
   streamProgress?: boolean;
   secrets?: Record<string, string>;
+  provider?: 'claude' | 'kimi';
 }
 
 interface IpcMessage {
@@ -721,31 +722,43 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*'
-      ],
+      allowedTools: containerInput.provider === 'kimi'
+        ? [
+            // Kimi-compatible tools only (limited set to avoid 403 errors)
+            'Bash',
+            'Read', 'Write', 'Edit', 'Glob', 'Grep',
+            'WebSearch', 'WebFetch',
+            'TodoWrite', 'Skill',
+            'NotebookEdit',
+          ]
+        : [
+            // Full tool set for Claude
+            'Bash',
+            'Read', 'Write', 'Edit', 'Glob', 'Grep',
+            'WebSearch', 'WebFetch',
+            'Task', 'TaskOutput', 'TaskStop',
+            'TeamCreate', 'TeamDelete', 'SendMessage',
+            'TodoWrite', 'ToolSearch', 'Skill',
+            'NotebookEdit',
+            'mcp__nanoclaw__*'
+          ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      ...(containerInput.provider !== 'kimi' && {
+        mcpServers: {
+          nanoclaw: {
+            command: 'node',
+            args: [mcpServerPath],
+            env: {
+              NANOCLAW_CHAT_JID: containerInput.chatJid,
+              NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+              NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            },
           },
         },
-      },
+      }),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
         PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
