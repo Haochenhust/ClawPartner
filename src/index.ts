@@ -414,7 +414,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             // Close streaming mode now that the result is in
             if (
               streamingCardId &&
-              (channel as unknown as { closeStreaming?: unknown }).closeStreaming
+              (channel as unknown as { closeStreaming?: unknown })
+                .closeStreaming
             ) {
               const fc = channel as unknown as {
                 closeStreaming: (id: string) => Promise<void>;

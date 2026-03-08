@@ -125,7 +125,11 @@ export function extractRichText(postJson: string): string {
       body = post as unknown as FeishuPostContent;
     } else {
       for (const val of Object.values(post)) {
-        if (val && typeof val === 'object' && Array.isArray((val as FeishuPostContent).content)) {
+        if (
+          val &&
+          typeof val === 'object' &&
+          Array.isArray((val as FeishuPostContent).content)
+        ) {
           body = val as FeishuPostContent;
           break;
         }
