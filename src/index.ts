@@ -227,7 +227,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Strip optional @<name> mention prefix so group-chat messages like
   // "@石原里美 /kimi" are treated the same as plain "/kimi" in p2p.
   const lastMsgForCmd = missedMessages[missedMessages.length - 1];
-  const cmdText = (lastMsgForCmd?.content?.trim() ?? '').replace(/^@\S+\s*/, '').trim();
+  const cmdText = (lastMsgForCmd?.content?.trim() ?? '')
+    .replace(/^@\S+\s*/, '')
+    .trim();
   if (cmdText === '/kimi' || cmdText === '/claude') {
     const provider: LlmProvider = cmdText === '/kimi' ? 'kimi' : 'claude';
     setLlmProvider(group.folder, provider);
@@ -835,7 +837,9 @@ async function startMessageLoop(): Promise<void> {
           // When a container is already running, messages bypass processGroupMessages
           // and get piped directly here. Intercept /kimi and /claude before piping.
           const lastMsgToSend = messagesToSend[messagesToSend.length - 1];
-          const pipedCmdText = (lastMsgToSend?.content?.trim() ?? '').replace(/^@\S+\s*/, '').trim();
+          const pipedCmdText = (lastMsgToSend?.content?.trim() ?? '')
+            .replace(/^@\S+\s*/, '')
+            .trim();
           if (pipedCmdText === '/kimi' || pipedCmdText === '/claude') {
             const provider: LlmProvider =
               pipedCmdText === '/kimi' ? 'kimi' : 'claude';
