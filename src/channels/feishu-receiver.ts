@@ -185,7 +185,7 @@ export function parseInboundEvent(
   const chatJid = `${JID_PREFIX}${chatId}`;
   const interactionType = resolveInteractionType(message);
   const threadRootId =
-    interactionType === 'thread_group' ? message.root_id : undefined;
+    interactionType === 'thread_group' ? message.thread_id : undefined;
   const timestamp = new Date(
     parseInt(message.create_time ?? '0', 10),
   ).toISOString();
