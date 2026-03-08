@@ -413,7 +413,10 @@ export class FeishuSender {
         { headers: { Authorization: `Bearer ${token}` } },
       );
       if (!res.ok) {
-        logger.warn({ openId, status: res.status }, 'Feishu: getUserInfo HTTP error');
+        logger.warn(
+          { openId, status: res.status },
+          'Feishu: getUserInfo HTTP error',
+        );
         return null;
       }
       const json = (await res.json()) as {
@@ -422,7 +425,10 @@ export class FeishuSender {
         data?: { user?: FeishuUserInfo };
       };
       if (json.code !== 0) {
-        logger.warn({ openId, code: json.code, msg: json.msg }, 'Feishu: getUserInfo API error');
+        logger.warn(
+          { openId, code: json.code, msg: json.msg },
+          'Feishu: getUserInfo API error',
+        );
         return null;
       }
       return json.data?.user ?? null;
