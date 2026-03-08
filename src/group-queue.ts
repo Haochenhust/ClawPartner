@@ -1,8 +1,9 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { stopContainer } from './container-runtime.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -189,6 +190,30 @@ export class GroupQueue {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Immediately kill the active container (SIGKILL + docker stop).
+   * Use when the container must not perform any cleanup — e.g. during an LLM
+   * provider switch where the dying container would otherwise write back a
+   * stale session ID that conflicts with the new provider.
+   */
+  killContainer(groupJid: string): void {
+    const state = this.getGroup(groupJid);
+    if (!state.active) return;
+    logger.info({ groupJid, containerName: state.containerName }, 'Force-killing container');
+    // Kill the host-side docker-run process immediately
+    if (state.process && !state.process.killed) {
+      state.process.kill('SIGKILL');
+    }
+    // Also stop the Docker container itself (--rm will auto-remove it)
+    if (state.containerName) {
+      exec(stopContainer(state.containerName), { timeout: 10_000 }, (err) => {
+        if (err) {
+          logger.debug({ containerName: state.containerName, err }, 'docker stop after kill (may already be gone)');
+        }
+      });
     }
   }
 

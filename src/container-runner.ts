@@ -24,6 +24,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { getLlmProvider, LlmProvider } from './db.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -251,16 +252,35 @@ function buildVolumeMounts(
 /**
  * Read allowed secrets from .env for passing to the container via stdin.
  * Secrets are never written to disk or mounted as files.
+ *
+ * In 'kimi' mode the Kimi API credentials are mapped onto the ANTHROPIC_*
+ * variables so Claude Code uses the Kimi-compatible endpoint transparently.
+ * CLAUDE_CODE_OAUTH_TOKEN is intentionally omitted to prevent OAuth fallback.
  */
-function readSecrets(): Record<string, string> {
+function readSecrets(provider: LlmProvider = 'claude'): Record<string, string> {
+  // Common credentials needed by feishu-cli skills inside every container
+  const feishuKeys = ['FEISHU_APP_ID', 'FEISHU_APP_SECRET'];
+
+  if (provider === 'kimi') {
+    const env = readEnvFile(['KIMI_API_KEY', 'KIMI_BASE_URL', ...feishuKeys]);
+    const secrets: Record<string, string> = {};
+    // Map Kimi credentials onto the ANTHROPIC_* variables Claude Code reads
+    if (env.KIMI_API_KEY) secrets.ANTHROPIC_API_KEY = env.KIMI_API_KEY;
+    if (env.KIMI_BASE_URL) secrets.ANTHROPIC_BASE_URL = env.KIMI_BASE_URL;
+    // Disable ToolSearch — not supported by the Kimi endpoint
+    secrets.ENABLE_TOOL_SEARCH = 'FALSE';
+    if (env.FEISHU_APP_ID) secrets.FEISHU_APP_ID = env.FEISHU_APP_ID;
+    if (env.FEISHU_APP_SECRET) secrets.FEISHU_APP_SECRET = env.FEISHU_APP_SECRET;
+    return secrets;
+  }
+
+  // Default: Claude Pro/Max subscription via OAuth or direct API key
   return readEnvFile([
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
-    // Feishu credentials — needed by feishu-cli skills inside the container
-    'FEISHU_APP_ID',
-    'FEISHU_APP_SECRET',
+    ...feishuKeys,
   ]);
 }
 
@@ -386,7 +406,9 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
-    input.secrets = readSecrets();
+    const provider = getLlmProvider(group.folder);
+    input.secrets = readSecrets(provider);
+    logger.debug({ group: group.name, provider }, 'LLM provider for this run');
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove secrets from input so they don't appear in logs

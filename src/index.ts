@@ -25,16 +25,20 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
+  clearSessions,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getLlmProvider,
   getMessagesByThread,
   getMessagesSince,
   getNewMessages,
   getRouterState,
   getThreadSession,
   initDatabase,
+  LlmProvider,
+  setLlmProvider,
   setRegisteredGroup,
   setRouterState,
   setSession,
@@ -214,6 +218,56 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   if (missedMessages.length === 0) return true;
+
+  // ── LLM provider switch commands (/kimi, /claude) ────────────────────────
+  // Intercept before trigger check so they work in every group without needing
+  // the @<bot> mention. Only the last message in the batch is checked.
+  const lastMsgForCmd = missedMessages[missedMessages.length - 1];
+  const cmdText = lastMsgForCmd?.content?.trim() ?? '';
+  if (cmdText === '/kimi' || cmdText === '/claude') {
+    const provider: LlmProvider = cmdText === '/kimi' ? 'kimi' : 'claude';
+    setLlmProvider(group.folder, provider);
+    clearSessions(group.folder, chatJid);
+    delete sessions[group.folder];
+    // Force-kill any lingering container so it cannot write back a stale session
+    queue.killContainer(chatJid);
+
+    const providerLabel =
+      provider === 'kimi' ? 'Kimi K2.5 (API 模式)' : 'Claude Pro/Max (订阅模式)';
+    const replyText = `✅ 已切换到 ${providerLabel}`;
+
+    const cmdMeta = messageMetadata.get(lastMsgForCmd.id);
+    const cmdReplyCtx: ReplyContext = {
+      type: interactionType as ReplyContext['type'],
+      triggerMessageId: cmdMeta?.triggerMessageId,
+    };
+
+    try {
+      if (channel.sendMessageWithContext) {
+        await channel.sendMessageWithContext(chatJid, replyText, cmdReplyCtx);
+      } else {
+        await channel.sendMessage(chatJid, replyText);
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to send provider switch confirmation');
+    }
+
+    // Advance cursor to consume the command message(s)
+    const cmdCursorKey =
+      isThreadAware && latestThreadId
+        ? `${chatJid}:${latestThreadId}`
+        : chatJid;
+    const cmdTimestamp = lastMsgForCmd.timestamp;
+    lastAgentTimestamp[cmdCursorKey] = cmdTimestamp;
+    if (isThreadAware) lastAgentTimestamp[chatJid] = cmdTimestamp;
+    saveState();
+
+    logger.info(
+      { group: group.name, provider },
+      'LLM provider switched via command',
+    );
+    return true;
+  }
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
@@ -754,6 +808,40 @@ async function startMessageLoop(): Promise<void> {
           const ipcSessionId = ipcThreadId
             ? (getThreadSession(chatJid, ipcThreadId) ?? undefined)
             : undefined;
+
+          // ── Provider switch commands in piped path ──────────────────────
+          // When a container is already running, messages bypass processGroupMessages
+          // and get piped directly here. Intercept /kimi and /claude before piping.
+          const lastMsgToSend = messagesToSend[messagesToSend.length - 1];
+          const pipedCmdText = lastMsgToSend?.content?.trim() ?? '';
+          if (pipedCmdText === '/kimi' || pipedCmdText === '/claude') {
+            const provider: LlmProvider =
+              pipedCmdText === '/kimi' ? 'kimi' : 'claude';
+            setLlmProvider(group.folder, provider);
+            clearSessions(group.folder, chatJid);
+            delete sessions[group.folder];
+            // Force-kill the container so it cannot write back the old session ID
+            queue.killContainer(chatJid);
+            const providerLabel =
+              provider === 'kimi'
+                ? 'Kimi K2.5 (API 模式)'
+                : 'Claude Pro/Max (订阅模式)';
+            channel
+              .sendMessage(chatJid, `✅ 已切换到 ${providerLabel}`)
+              .catch((err) =>
+                logger.warn(
+                  { err },
+                  'Failed to send provider switch confirmation',
+                ),
+              );
+            lastAgentTimestamp[chatJid] = lastMsgToSend.timestamp;
+            saveState();
+            logger.info(
+              { group: group.name, provider },
+              'LLM provider switched via command (piped path)',
+            );
+            continue;
+          }
 
           if (
             queue.sendMessage(chatJid, formatted, ipcThreadId, ipcSessionId)

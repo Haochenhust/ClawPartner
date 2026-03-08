@@ -544,6 +544,25 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+// --- LLM provider preference ---
+
+export type LlmProvider = 'claude' | 'kimi';
+
+/**
+ * Get the LLM provider for a group. Defaults to 'claude' (Pro/Max subscription).
+ */
+export function getLlmProvider(groupFolder: string): LlmProvider {
+  const value = getRouterState(`llm_provider:${groupFolder}`);
+  return value === 'kimi' ? 'kimi' : 'claude';
+}
+
+/**
+ * Set the LLM provider for a group.
+ */
+export function setLlmProvider(groupFolder: string, provider: LlmProvider): void {
+  setRouterState(`llm_provider:${groupFolder}`, provider);
+}
+
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {
@@ -572,6 +591,17 @@ export function setSession(groupFolder: string, sessionId: string): void {
   db.prepare(
     'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
   ).run(groupFolder, sessionId);
+}
+
+/**
+ * Remove stored sessions for a group so the next query starts fresh.
+ * Also clears per-thread sessions for the given chat JID.
+ * Used when switching LLM providers — the old container is force-killed
+ * so it cannot write back a stale session ID.
+ */
+export function clearSessions(groupFolder: string, chatJid: string): void {
+  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+  db.prepare('DELETE FROM thread_sessions WHERE chat_jid = ?').run(chatJid);
 }
 
 export function getAllSessions(): Record<string, string> {
