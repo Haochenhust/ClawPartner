@@ -225,9 +225,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Thread-aware channels get a per-thread Claude session so continuity is
   // maintained within a thread, and each new thread starts fresh (undefined).
   // Non-thread-aware channels always reuse the group-wide session.
-  const sessionId = isThreadAware && latestThreadId
-    ? (getThreadSession(chatJid, latestThreadId) ?? undefined) // undefined = fresh start for new threads
-    : (sessions[group.folder] ?? undefined);                   // fallback to group session
+  const sessionId =
+    isThreadAware && latestThreadId
+      ? (getThreadSession(chatJid, latestThreadId) ?? undefined) // undefined = fresh start for new threads
+      : (sessions[group.folder] ?? undefined); // fallback to group session
 
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -457,7 +458,10 @@ async function runAgent(
     for (const [tid, sid] of Object.entries(ts)) {
       setThreadSession(chatJid, tid, sid);
     }
-    logger.debug({ group: group.name, count: Object.keys(ts).length }, 'Persisted thread→session mappings');
+    logger.debug(
+      { group: group.name, count: Object.keys(ts).length },
+      'Persisted thread→session mappings',
+    );
   };
 
   // Wrap onOutput to track session ID from streamed results
