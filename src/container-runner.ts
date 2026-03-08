@@ -270,7 +270,8 @@ function readSecrets(provider: LlmProvider = 'claude'): Record<string, string> {
     // Disable ToolSearch — not supported by the Kimi endpoint
     secrets.ENABLE_TOOL_SEARCH = 'FALSE';
     if (env.FEISHU_APP_ID) secrets.FEISHU_APP_ID = env.FEISHU_APP_ID;
-    if (env.FEISHU_APP_SECRET) secrets.FEISHU_APP_SECRET = env.FEISHU_APP_SECRET;
+    if (env.FEISHU_APP_SECRET)
+      secrets.FEISHU_APP_SECRET = env.FEISHU_APP_SECRET;
     return secrets;
   }
 

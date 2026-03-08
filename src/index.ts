@@ -233,7 +233,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     queue.killContainer(chatJid);
 
     const providerLabel =
-      provider === 'kimi' ? 'Kimi K2.5 (API 模式)' : 'Claude Pro/Max (订阅模式)';
+      provider === 'kimi'
+        ? 'Kimi K2.5 (API 模式)'
+        : 'Claude Pro/Max (订阅模式)';
     const replyText = `✅ 已切换到 ${providerLabel}`;
 
     const cmdMeta = messageMetadata.get(lastMsgForCmd.id);

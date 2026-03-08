@@ -202,7 +202,10 @@ export class GroupQueue {
   killContainer(groupJid: string): void {
     const state = this.getGroup(groupJid);
     if (!state.active) return;
-    logger.info({ groupJid, containerName: state.containerName }, 'Force-killing container');
+    logger.info(
+      { groupJid, containerName: state.containerName },
+      'Force-killing container',
+    );
     // Kill the host-side docker-run process immediately
     if (state.process && !state.process.killed) {
       state.process.kill('SIGKILL');
@@ -211,7 +214,10 @@ export class GroupQueue {
     if (state.containerName) {
       exec(stopContainer(state.containerName), { timeout: 10_000 }, (err) => {
         if (err) {
-          logger.debug({ containerName: state.containerName, err }, 'docker stop after kill (may already be gone)');
+          logger.debug(
+            { containerName: state.containerName, err },
+            'docker stop after kill (may already be gone)',
+          );
         }
       });
     }

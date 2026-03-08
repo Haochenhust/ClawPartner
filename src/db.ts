@@ -559,7 +559,10 @@ export function getLlmProvider(groupFolder: string): LlmProvider {
 /**
  * Set the LLM provider for a group.
  */
-export function setLlmProvider(groupFolder: string, provider: LlmProvider): void {
+export function setLlmProvider(
+  groupFolder: string,
+  provider: LlmProvider,
+): void {
   setRouterState(`llm_provider:${groupFolder}`, provider);
 }
 
