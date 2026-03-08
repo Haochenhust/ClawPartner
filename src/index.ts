@@ -985,7 +985,7 @@ async function main(): Promise<void> {
         folder,
         trigger: `@${ASSISTANT_NAME}`,
         added_at: new Date().toISOString(),
-        requiresTrigger: isGroup,
+        requiresTrigger: false, // No @mention required for personal Feishu accounts
         isMain: false,
       });
     },

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash:*)",
+      "Bash(npx tsx:*)",
+      "Bash(brew:*)",
+      "Bash(sudo mkdir:*)",
+      "Bash(open:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(launchctl list:*)",
+      "Bash(container list:*)",
+      "Bash(container system:*)",
+      "Bash(./container/build.sh:*)",
+      "Bash(container builder:*)",
+      "Bash(container image:*)",
+      "Bash(claude:*)",
+      "Bash(CLAUDECODE=\"\" claude config:*)",
+      "Bash(docker exec:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}
