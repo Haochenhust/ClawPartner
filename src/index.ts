@@ -391,11 +391,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
-        const stripped = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        const stripped = raw
+          .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+          .trim();
 
         // Build usage stats footer: "8.1s · 4 in · 231 out"
         let statsFooter = '';
-        if (result.elapsedMs !== undefined || result.inputTokens !== undefined) {
+        if (
+          result.elapsedMs !== undefined ||
+          result.inputTokens !== undefined
+        ) {
           const parts: string[] = [];
           if (result.elapsedMs !== undefined) {
             parts.push(`${(result.elapsedMs / 1000).toFixed(1)}s`);
@@ -455,13 +460,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             const sentId = await ctxSendGetId(text);
             if (
               sentId &&
-              (channel as unknown as { closeStreaming?: unknown }).closeStreaming
+              (channel as unknown as { closeStreaming?: unknown })
+                .closeStreaming
             ) {
               const fc = channel as unknown as {
                 closeStreaming: (id: string) => Promise<void>;
               };
               fc.closeStreaming(sentId).catch((err) =>
-                logger.warn({ err }, 'Failed to close streaming on direct result'),
+                logger.warn(
+                  { err },
+                  'Failed to close streaming on direct result',
+                ),
               );
             }
           }
