@@ -116,13 +116,23 @@ function extractPostElement(el: FeishuPostElement): string {
 /** Convert a Feishu post (rich text) content JSON to plain Markdown. */
 export function extractRichText(postJson: string): string {
   try {
-    const post = JSON.parse(postJson) as
-      | { zh_cn?: FeishuPostContent }
-      | FeishuPostContent;
-    // Post messages may have locale keys like { zh_cn: { content: [...] } }
-    const body =
-      (post as Record<string, FeishuPostContent>).zh_cn ??
-      (post as FeishuPostContent);
+    const post = JSON.parse(postJson) as Record<string, unknown>;
+
+    // Post messages use locale keys: { zh_cn: { content: [...] }, en_us: ... }
+    // or just a bare { content: [...] }. Pick the first locale that has content.
+    let body: FeishuPostContent | undefined;
+    if (Array.isArray((post as unknown as FeishuPostContent).content)) {
+      body = post as unknown as FeishuPostContent;
+    } else {
+      for (const val of Object.values(post)) {
+        if (val && typeof val === 'object' && Array.isArray((val as FeishuPostContent).content)) {
+          body = val as FeishuPostContent;
+          break;
+        }
+      }
+    }
+
+    if (!body) return '';
     const lines = (body.content ?? []).map((row) =>
       row.map(extractPostElement).join(''),
     );
