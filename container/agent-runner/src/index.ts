@@ -30,6 +30,7 @@ interface ContainerInput {
   assistantName?: string;
   streamProgress?: boolean;
   secrets?: Record<string, string>;
+  isKimi?: boolean;
 }
 
 interface IpcMessage {
@@ -735,17 +736,21 @@ async function runQuery(
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-      },
+      ...(containerInput.isKimi
+        ? {}
+        : {
+            mcpServers: {
+              nanoclaw: {
+                command: 'node',
+                args: [mcpServerPath],
+                env: {
+                  NANOCLAW_CHAT_JID: containerInput.chatJid,
+                  NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+                  NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+                },
+              },
+            },
+          }),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
         PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],

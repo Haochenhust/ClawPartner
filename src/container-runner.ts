@@ -42,6 +42,7 @@ export interface ContainerInput {
   assistantName?: string;
   streamProgress?: boolean;
   secrets?: Record<string, string>;
+  isKimi?: boolean;
 }
 
 export interface ContainerOutput {
@@ -397,6 +398,7 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     const provider = getLlmProvider(group.folder);
+    input.isKimi = provider === 'kimi';
     input.secrets = readSecrets(provider);
     logger.debug({ group: group.name, provider }, 'LLM provider for this run');
     container.stdin.write(JSON.stringify(input));
