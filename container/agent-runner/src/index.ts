@@ -45,6 +45,11 @@ interface ContainerOutput {
   error?: string;
   /** All thread→session mappings accumulated during this container's lifetime. */
   threadSessions?: Record<string, string>;
+  /** Token usage for this result (only present on status='success' with a non-null result). */
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Wall-clock time from query start to this result, in milliseconds. */
+  elapsedMs?: number;
 }
 
 interface SessionEntry {
@@ -625,6 +630,7 @@ async function runQuery(
   };
   setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
 
+  const queryStartTime = Date.now();
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
@@ -724,13 +730,25 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       const resultMsg = message as { modelUsage?: Record<string, { inputTokens: number; outputTokens: number }> };
+      let resultInputTokens = 0;
+      let resultOutputTokens = 0;
       if (resultMsg.modelUsage) {
-        totalInputTokens += Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.inputTokens || 0), 0);
-        totalOutputTokens += Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.outputTokens || 0), 0);
+        resultInputTokens = Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.inputTokens || 0), 0);
+        resultOutputTokens = Object.values(resultMsg.modelUsage).reduce((sum, m) => sum + (m.outputTokens || 0), 0);
+        totalInputTokens += resultInputTokens;
+        totalOutputTokens += resultOutputTokens;
       }
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''} cumInputTokens=${totalInputTokens} cumOutputTokens=${totalOutputTokens}`);
+      const elapsedMs = Date.now() - queryStartTime;
+      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''} cumInputTokens=${totalInputTokens} cumOutputTokens=${totalOutputTokens} elapsedMs=${elapsedMs}`);
       // Flush result immediately so the user doesn't wait for the idle timeout
-      writeOutput({ status: 'success', result: textResult || null, newSessionId });
+      writeOutput({
+        status: 'success',
+        result: textResult || null,
+        newSessionId,
+        inputTokens: textResult ? resultInputTokens : undefined,
+        outputTokens: textResult ? resultOutputTokens : undefined,
+        elapsedMs: textResult ? elapsedMs : undefined,
+      });
     }
   }
 
@@ -863,13 +881,7 @@ async function main(): Promise<void> {
       prompt = nextMessage.text;
     }
 
-    // Emit a single token summary for the entire session (all turns combined)
-    if (sessionTotalInputTokens > 0) {
-      writeOutput({
-        status: 'progress',
-        result: `📊 *Token 消耗* | Input: ${sessionTotalInputTokens.toLocaleString()} | Output: ${sessionTotalOutputTokens.toLocaleString()}`,
-      });
-    }
+
 
     // Emit all thread→session mappings so the host can persist them to DB
     if (threadSessionMap.size > 0) {

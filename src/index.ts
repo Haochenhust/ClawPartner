@@ -391,7 +391,27 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        const stripped = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+
+        // Build usage stats footer: "8.1s · 4 in · 231 out"
+        let statsFooter = '';
+        if (result.elapsedMs !== undefined || result.inputTokens !== undefined) {
+          const parts: string[] = [];
+          if (result.elapsedMs !== undefined) {
+            parts.push(`${(result.elapsedMs / 1000).toFixed(1)}s`);
+          }
+          if (result.inputTokens !== undefined) {
+            parts.push(`${result.inputTokens} in`);
+          }
+          if (result.outputTokens !== undefined) {
+            parts.push(`${result.outputTokens} out`);
+          }
+          if (parts.length > 0) {
+            statsFooter = `\n\n_${parts.join(' · ')}_`;
+          }
+        }
+
+        const text = stripped ? stripped + statsFooter : '';
         logger.info(
           { group: group.name },
           `Agent output: ${raw.slice(0, 200)}`,
@@ -429,7 +449,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             progressLines.length = 0;
             resultText = null;
           } else {
-            await ctxSend(text);
+            // No live progress card — send result directly.
+            // Track the card ID so we can immediately close streaming
+            // (otherwise Feishu Cardkit cards keep showing "思考中...").
+            const sentId = await ctxSendGetId(text);
+            if (
+              sentId &&
+              (channel as unknown as { closeStreaming?: unknown }).closeStreaming
+            ) {
+              const fc = channel as unknown as {
+                closeStreaming: (id: string) => Promise<void>;
+              };
+              fc.closeStreaming(sentId).catch((err) =>
+                logger.warn({ err }, 'Failed to close streaming on direct result'),
+              );
+            }
           }
           outputSentToUser = true;
 

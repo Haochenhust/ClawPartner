@@ -50,6 +50,11 @@ export interface ContainerOutput {
   error?: string;
   /** All thread→session mappings accumulated during this container's lifetime. */
   threadSessions?: Record<string, string>;
+  /** Token usage for this result (only present on status='success' with a non-null result). */
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Wall-clock time from query start to this result, in milliseconds. */
+  elapsedMs?: number;
 }
 
 interface VolumeMount {

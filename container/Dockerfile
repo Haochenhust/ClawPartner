@@ -36,8 +36,12 @@ RUN npm install -g agent-browser @anthropic-ai/claude-code
 # Install feishu-cli for Feishu document/message management skills
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
     VERSION=$(curl -fsSL https://api.github.com/repos/riba2534/feishu-cli/releases/latest | grep '"tag_name"' | sed 's/.*"tag_name": "\(.*\)".*/\1/') && \
-    curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_linux-${ARCH}.tar.gz" | tar -xz -C /usr/local/bin feishu-cli && \
-    chmod +x /usr/local/bin/feishu-cli
+    mkdir -p /tmp/feishu-cli-install && \
+    curl -fsSL "https://github.com/riba2534/feishu-cli/releases/download/${VERSION}/feishu-cli_${VERSION}_linux-${ARCH}.tar.gz" \
+      | tar -xz -C /tmp/feishu-cli-install && \
+    find /tmp/feishu-cli-install -type f -name 'feishu-cli' -exec mv {} /usr/local/bin/feishu-cli \; && \
+    chmod +x /usr/local/bin/feishu-cli && \
+    rm -rf /tmp/feishu-cli-install
 
 # Create app directory
 WORKDIR /app
