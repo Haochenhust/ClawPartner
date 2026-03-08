@@ -138,6 +138,43 @@ function truncate(s: string, max = 120): string {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
+function extractTaggedValue(text: string, tagName: string): string | undefined {
+  const match = text.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`, 'i'));
+  const value = match?.[1]?.trim();
+  return value || undefined;
+}
+
+function normalizeSkillName(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.replace(/^\/+/, '') || undefined;
+}
+
+function getSkillName(input: Record<string, unknown>): string | undefined {
+  const directKeys = ['command_name', 'command', 'skill_name', 'skill', 'name', 'slug'];
+  for (const key of directKeys) {
+    const value = input[key];
+    if (typeof value === 'string') {
+      const normalized = normalizeSkillName(value);
+      if (normalized) return normalized;
+    }
+  }
+
+  const taggedKeys = ['metadata', 'prompt', 'description'];
+  for (const key of taggedKeys) {
+    const value = input[key];
+    if (typeof value !== 'string') continue;
+    const tagged =
+      extractTaggedValue(value, 'command-name') ??
+      extractTaggedValue(value, 'command-message');
+    if (!tagged) continue;
+    const normalized = normalizeSkillName(tagged);
+    if (normalized) return normalized;
+  }
+
+  return undefined;
+}
+
 function formatToolUseBlock(name: string, input: Record<string, unknown>): string {
   switch (name) {
     case 'Bash': {
@@ -162,6 +199,10 @@ function formatToolUseBlock(name: string, input: Record<string, unknown>): strin
       return `🌐 WebFetch: ${truncate(String(input.url ?? ''), 100)}`;
     case 'Task':
       return `🧩 Task: ${truncate(String(input.description ?? input.prompt ?? ''), 100)}`;
+    case 'Skill': {
+      const skillName = getSkillName(input);
+      return skillName ? `⚙️ Skill: ${truncate(skillName, 100)}` : `⚙️ Skill`;
+    }
     case 'TodoWrite':
       return `📋 TodoWrite`;
     case 'NotebookEdit':
@@ -177,7 +218,12 @@ function formatToolUseBlock(name: string, input: Record<string, unknown>): strin
  */
 function formatProgress(
   message: SDKMessage,
-  state: { thinkingNotified: boolean; lastProgressByType: Map<string, number>; sentToolProgressIds: Set<string> },
+  state: {
+    thinkingNotified: boolean;
+    lastProgressByType: Map<string, number>;
+    sentToolProgressIds: Set<string>;
+    toolUseLabelsById: Map<string, string>;
+  },
   streamProgress: boolean,
   containerState: { initShown: boolean },
 ): string | null {
@@ -205,8 +251,10 @@ function formatProgress(
           typeof block === 'object' &&
           (block as { type?: string }).type === 'tool_use'
         ) {
-          const b = block as { name: string; input: Record<string, unknown> };
-          parts.push(formatToolUseBlock(b.name, b.input ?? {}));
+          const b = block as { id?: string; name: string; input: Record<string, unknown> };
+          const label = formatToolUseBlock(b.name, b.input ?? {});
+          if (b.id) state.toolUseLabelsById.set(b.id, label);
+          parts.push(label);
         }
       }
       if (parts.length === 0) return null;
@@ -227,7 +275,8 @@ function formatProgress(
       const last = state.lastProgressByType.get(key) ?? 0;
       if (now - last < 10_000) return null;
       state.lastProgressByType.set(key, now);
-      return `⏳ ${tp.tool_name} 执行中（已 ${Math.round(tp.elapsed_time_seconds)}s）`;
+      const label = state.toolUseLabelsById.get(tp.tool_use_id) ?? `⚙️ ${tp.tool_name}`;
+      return `⏳ ${label} 执行中（已 ${Math.round(tp.elapsed_time_seconds)}s）`;
     }
 
     case 'stream_event': {
@@ -594,6 +643,7 @@ async function runQuery(
     thinkingNotified: false,
     lastProgressByType: new Map<string, number>(),
     sentToolProgressIds: new Set<string>(),
+    toolUseLabelsById: new Map<string, string>(),
   };
   const stream = new MessageStream();
   stream.push(prompt);
