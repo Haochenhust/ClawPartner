@@ -292,7 +292,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
-  let reactionRemoved = false;
 
   // Build reply context so sends are routed to the correct place
   // (quoted reply in groups, thread reply in topic groups, direct in p2p).
@@ -434,18 +433,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           }
           outputSentToUser = true;
 
-          // Remove receipt reaction as soon as the first result is sent
-          if (!reactionRemoved) {
-            const tMsg = missedMessages[missedMessages.length - 1];
-            const tMeta = tMsg ? messageMetadata.get(tMsg.id) : undefined;
-            if (tMeta?.reactionId && tMsg?.id && channel.removeReaction) {
-              reactionRemoved = true;
-              channel
-                .removeReaction(tMsg.id, tMeta.reactionId)
-                .catch((err) =>
-                  logger.warn({ err }, 'Failed to remove receipt reaction'),
-                );
-              messageMetadata.delete(tMsg.id);
+          // Remove all pending receipt reactions for this chat.
+          // When the container is reused for follow-up messages, the original
+          // missedMessages closure is stale, so we scan messageMetadata instead.
+          if (channel.removeReaction) {
+            for (const [msgId, meta] of messageMetadata) {
+              if (meta.reactionId) {
+                channel
+                  .removeReaction(msgId, meta.reactionId)
+                  .catch((err) =>
+                    logger.warn({ err }, 'Failed to remove receipt reaction'),
+                  );
+                messageMetadata.delete(msgId);
+              }
             }
           }
         }
@@ -485,21 +485,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       );
   }
 
-  // Clean up: remove reaction if it wasn't already removed in the streaming callback
-  // (e.g. container exited without producing output)
-  if (!reactionRemoved) {
-    const triggerMsg = missedMessages[missedMessages.length - 1];
-    const triggerMeta = triggerMsg
-      ? messageMetadata.get(triggerMsg.id)
-      : undefined;
-    if (triggerMeta?.reactionId && triggerMsg?.id && channel.removeReaction) {
-      channel
-        .removeReaction(triggerMsg.id, triggerMeta.reactionId)
-        .catch((err) =>
-          logger.warn({ err }, 'Failed to remove receipt reaction'),
-        );
+  // Clean up: remove any leftover reactions (e.g. container exited without output)
+  if (channel.removeReaction) {
+    for (const [msgId, meta] of messageMetadata) {
+      if (meta.reactionId) {
+        channel
+          .removeReaction(msgId, meta.reactionId)
+          .catch((err) =>
+            logger.warn({ err }, 'Failed to remove receipt reaction'),
+          );
+        messageMetadata.delete(msgId);
+      }
     }
-    if (triggerMsg) messageMetadata.delete(triggerMsg.id);
   }
 
   // Thread→session persistence is now handled by runAgent via threadSessions
