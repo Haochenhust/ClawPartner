@@ -41,7 +41,8 @@ const CARDKIT_PREFIX = 'ck:'; // prefix to distinguish cardkit card IDs from mes
 interface CardkitSession {
   cardId: string;
   resultElementId: string;
-  progressElementId: string;
+  progressElementId: string;  // inner markdown element ID
+  progressPanelId: string;    // outer collapsible_panel element ID
   sequence: number;
   progressLines: string[];
 }
@@ -131,6 +132,7 @@ export class FeishuChannel implements Channel {
         cardId: session.cardId,
         resultElementId: session.resultElementId,
         progressElementId: session.progressElementId,
+        progressPanelId: session.progressPanelId,
         sequence: 1,
         progressLines: [],
       });
@@ -197,10 +199,27 @@ export class FeishuChannel implements Channel {
     }
   }
 
-  /** Close Cardkit streaming mode and clean up session. */
+  /** Close Cardkit streaming mode: collapse thinking panel, then stop streaming. */
   async closeStreaming(compositeId: string): Promise<void> {
     const session = this.cardkitSessions.get(compositeId);
     if (!session) return;
+
+    // Collapse the thinking panel and update its title
+    const seq = session.sequence;
+    session.sequence += 1;
+    await this.sender.patchCardElement(
+      session.cardId,
+      session.progressPanelId,
+      {
+        expanded: false,
+        header: {
+          title: { tag: 'plain_text', content: '💭 思考过程' },
+          vertical_align: 'center',
+        },
+      },
+      seq,
+    );
+
     await this.sender.closeCardStreaming(session.cardId, session.sequence);
     this.cardkitSessions.delete(compositeId);
   }
@@ -254,25 +273,54 @@ export class FeishuChannel implements Channel {
   }
 
   /**
-   * Send a card and return its message_id, using the appropriate reply strategy
-   * based on interaction type.
+   * Send a Cardkit streaming card with the appropriate reply strategy,
+   * returning a composite ID for subsequent streaming updates.
+   * Falls back to a plain card if Cardkit creation fails.
    */
   async sendMessageGetIdWithContext(
     jid: string,
     text: string,
     context: ReplyContext,
   ): Promise<string> {
-    switch (context.type) {
-      case 'p2p':
-        return this.sendToChat(jid, text);
-      case 'group':
-        return context.triggerMessageId
-          ? this.replyToMessage(context.triggerMessageId, jid, text)
-          : this.sendToChat(jid, text);
-      case 'thread_group':
-        return context.triggerMessageId
-          ? this.replyInThread(context.triggerMessageId, jid, text)
-          : this.sendToChat(jid, text);
+    const chatId = jid.slice(JID_PREFIX.length);
+
+    try {
+      const session = await this.sender.createStreamingCard(text);
+      const cardContent = JSON.stringify({ type: 'card', data: { card_id: session.cardId } });
+
+      let msgId: string;
+      if (context.type === 'group' && context.triggerMessageId) {
+        msgId = await this.sender.replyToMessage(context.triggerMessageId, cardContent);
+      } else if (context.type === 'thread_group' && context.triggerMessageId) {
+        msgId = await this.sender.replyInThread(context.triggerMessageId, chatId, cardContent);
+      } else {
+        msgId = await this.sender.sendToChat(chatId, cardContent);
+      }
+
+      const compositeId = `${CARDKIT_PREFIX}${session.cardId}::${msgId}`;
+      this.cardkitSessions.set(compositeId, {
+        cardId: session.cardId,
+        resultElementId: session.resultElementId,
+        progressElementId: session.progressElementId,
+        progressPanelId: session.progressPanelId,
+        sequence: 1,
+        progressLines: [],
+      });
+      return compositeId;
+    } catch (err) {
+      logger.warn({ err }, 'Feishu: Cardkit creation failed (context), falling back to plain card');
+      switch (context.type) {
+        case 'p2p':
+          return this.sendToChat(jid, text);
+        case 'group':
+          return context.triggerMessageId
+            ? this.replyToMessage(context.triggerMessageId, jid, text)
+            : this.sendToChat(jid, text);
+        case 'thread_group':
+          return context.triggerMessageId
+            ? this.replyInThread(context.triggerMessageId, jid, text)
+            : this.sendToChat(jid, text);
+      }
     }
   }
 

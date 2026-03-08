@@ -225,21 +225,28 @@ export class FeishuSender {
     cardId: string;
     resultElementId: string;
     progressElementId: string;
+    progressPanelId: string;
   }> {
     const RESULT_ID = 'nanoclaw_result';
-    const PROGRESS_ID = 'nanoclaw_progress';
+    const PANEL_ID = 'nanoclaw_progress';
+    const PROGRESS_MD_ID = 'nanoclaw_progress_md';
 
     const cardJson = JSON.stringify({
       schema: '2.0',
       config: {
         wide_screen_mode: true,
         streaming_mode: true,
+        streaming_config: {
+          print_frequency_ms: { default: 50 },
+          print_step: { default: 5 },
+          print_strategy: 'delay',
+        },
       },
       body: {
         elements: [
           {
             tag: 'collapsible_panel',
-            element_id: PROGRESS_ID,
+            element_id: PANEL_ID,
             header: {
               title: {
                 tag: 'plain_text',
@@ -251,6 +258,7 @@ export class FeishuSender {
             elements: [
               {
                 tag: 'markdown',
+                element_id: PROGRESS_MD_ID,
                 content: '',
               },
             ],
@@ -277,7 +285,8 @@ export class FeishuSender {
     return {
       cardId,
       resultElementId: RESULT_ID,
-      progressElementId: PROGRESS_ID,
+      progressElementId: PROGRESS_MD_ID,
+      progressPanelId: PANEL_ID,
     };
   }
 
@@ -290,7 +299,7 @@ export class FeishuSender {
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
-        content: JSON.stringify({ type: 'cardkit', data: { card_id: cardId } }),
+        content: JSON.stringify({ type: 'card', data: { card_id: cardId } }),
         msg_type: 'interactive',
       },
     });
@@ -330,12 +339,31 @@ export class FeishuSender {
       await this.client.cardkit.v1.card.settings({
         path: { card_id: cardId },
         data: {
-          settings: JSON.stringify({ streaming_mode: false }),
+          settings: JSON.stringify({ config: { streaming_mode: false } }),
           sequence,
         },
       });
     } catch (err) {
       logger.warn({ cardId, err }, 'Feishu: closeCardStreaming failed');
+    }
+  }
+
+  /**
+   * Partially update an element's properties (e.g. collapse a panel).
+   */
+  async patchCardElement(
+    cardId: string,
+    elementId: string,
+    partial: Record<string, unknown>,
+    sequence: number,
+  ): Promise<void> {
+    try {
+      await this.client.cardkit.v1.cardElement.patch({
+        path: { card_id: cardId, element_id: elementId },
+        data: { partial_element: JSON.stringify(partial), sequence },
+      });
+    } catch (err) {
+      logger.warn({ cardId, elementId, err }, 'Feishu: patchCardElement failed');
     }
   }
 

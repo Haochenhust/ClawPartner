@@ -323,6 +323,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // State for in-place progress+result message (channels that support editing)
   let progressMessageId: string | null = null;
+  let streamingCardId: string | null = null; // preserved for closeStreaming after progressMessageId is reset
   const progressLines: string[] = [];
   let resultText: string | null = null;
 
@@ -362,6 +363,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           if (!progressMessageId) {
             try {
               progressMessageId = await ctxSendGetId(fullText);
+              streamingCardId = progressMessageId;
             } catch (err) {
               logger.warn(
                 { err },
@@ -409,6 +411,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               );
               await ctxSend(text);
             }
+            // Close streaming mode now that the result is in
+            const hasCloseMethod = !!(channel as unknown as { closeStreaming?: unknown }).closeStreaming;
+            logger.info(
+              { streamingCardId, hasCloseMethod },
+              'Attempting to close Cardkit streaming',
+            );
+            if (streamingCardId && hasCloseMethod) {
+              const fc = channel as unknown as { closeStreaming: (id: string) => Promise<void> };
+              try {
+                await fc.closeStreaming(streamingCardId);
+                logger.info({ streamingCardId }, 'Cardkit streaming closed successfully');
+              } catch (err) {
+                logger.warn({ err }, 'Failed to close Cardkit streaming');
+              }
+              streamingCardId = null;
+            }
             // Reset live-message state so a subsequent turn starts fresh
             progressMessageId = null;
             progressLines.length = 0;
@@ -422,6 +440,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           if (!reactionRemoved) {
             const tMsg = missedMessages[missedMessages.length - 1];
             const tMeta = tMsg ? messageMetadata.get(tMsg.id) : undefined;
+            logger.debug(
+              { msgId: tMsg?.id, hasReactionId: !!tMeta?.reactionId, hasRemoveReaction: !!channel.removeReaction, metadataSize: messageMetadata.size },
+              'Reaction removal check',
+            );
             if (tMeta?.reactionId && tMsg?.id && channel.removeReaction) {
               reactionRemoved = true;
               channel
@@ -452,9 +474,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
   stopHeartbeat();
 
-  // Close Cardkit streaming mode if applicable
+  // Close Cardkit streaming mode if it wasn't already closed in the callback
+  const pendingStreamId = streamingCardId ?? progressMessageId;
   if (
-    progressMessageId &&
+    pendingStreamId &&
     (channel as unknown as { closeStreaming?: (id: string) => Promise<void> })
       .closeStreaming
   ) {
@@ -462,7 +485,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       closeStreaming: (id: string) => Promise<void>;
     };
     feishuChannel
-      .closeStreaming(progressMessageId)
+      .closeStreaming(pendingStreamId)
       .catch((err) =>
         logger.warn({ err }, 'Failed to close Cardkit streaming'),
       );
