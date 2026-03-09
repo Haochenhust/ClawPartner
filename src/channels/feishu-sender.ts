@@ -92,11 +92,11 @@ export class FeishuSender {
 
   // ── Sending ─────────────────────────────────────────────────────────────────
 
-  /** Send a new message (card or text) to a chat by chat_id. */
+  /** Send a new message (card, text, or image) to a chat by chat_id. */
   async sendToChat(
     chatId: string,
     content: string,
-    msgType: 'text' | 'interactive' = 'interactive',
+    msgType: 'text' | 'interactive' | 'image' = 'interactive',
   ): Promise<string> {
     const res = await this.client.im.message.create({
       params: { receive_id_type: 'chat_id' },

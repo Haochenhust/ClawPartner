@@ -12,6 +12,7 @@ import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
+  sendImage?: (jid: string, imagePath: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -164,6 +165,7 @@ export async function processTaskIpc(
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
+    imagePath?: string;
     // For register_group
     jid?: string;
     name?: string;
@@ -373,7 +375,11 @@ export async function processTaskIpc(
           if (!isNaN(scheduled.getTime())) {
             updateTask(data.taskId, { next_run: scheduled.toISOString() });
             logger.info(
-              { taskId: data.taskId, nextRun: data.schedule_value, sourceGroup },
+              {
+                taskId: data.taskId,
+                nextRun: data.schedule_value,
+                sourceGroup,
+              },
               'Task schedule updated via IPC',
             );
           } else {
@@ -422,6 +428,31 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'send_image':
+      // Send an image to a chat
+      if (data.chatJid && data.imagePath) {
+        if (deps.sendImage) {
+          try {
+            await deps.sendImage(data.chatJid, data.imagePath);
+            logger.info(
+              { chatJid: data.chatJid, imagePath: data.imagePath, sourceGroup },
+              'Image sent via IPC',
+            );
+          } catch (err) {
+            logger.error(
+              { chatJid: data.chatJid, imagePath: data.imagePath, err },
+              'Failed to send image via IPC',
+            );
+          }
+        } else {
+          logger.warn(
+            { chatJid: data.chatJid },
+            'sendImage not available on this channel',
+          );
+        }
       }
       break;
 

@@ -117,6 +117,8 @@ export interface Channel {
     text: string,
     context: ReplyContext,
   ): Promise<string>;
+  /** Send an image to a chat by uploading the image file. */
+  sendImage?(jid: string, imagePath: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

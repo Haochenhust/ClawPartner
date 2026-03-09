@@ -347,6 +347,18 @@ export class FeishuChannel implements Channel {
     await this.sendMessageGetIdWithContext(jid, text, context);
   }
 
+  /**
+   * Send an image to a chat by uploading the image file.
+   * Reads the file from disk, uploads to Feishu, and sends as image message.
+   */
+  async sendImage(jid: string, imagePath: string): Promise<void> {
+    const chatId = jid.slice(JID_PREFIX.length);
+    const imageBuffer = fs.readFileSync(imagePath);
+    const imageKey = await this.sender.uploadImage(imageBuffer);
+    const content = JSON.stringify({ image_key: imageKey });
+    await this.sender.sendToChat(chatId, content, 'image');
+  }
+
   // ── Reactions ─────────────────────────────────────────────────────────────
 
   async addReaction(messageId: string, emoji: string): Promise<string | null> {
