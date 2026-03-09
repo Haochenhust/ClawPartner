@@ -730,7 +730,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__lark-mcp__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -749,6 +750,20 @@ async function runQuery(
                   NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
                 },
               },
+              ...(sdkEnv.FEISHU_APP_ID && sdkEnv.FEISHU_APP_SECRET
+                ? {
+                    'lark-mcp': {
+                      command: 'npx',
+                      args: [
+                        '-y',
+                        '@larksuiteoapi/lark-mcp',
+                        'mcp',
+                        '-a', sdkEnv.FEISHU_APP_ID,
+                        '-s', sdkEnv.FEISHU_APP_SECRET,
+                      ],
+                    },
+                  }
+                : {}),
             },
           }),
       hooks: {

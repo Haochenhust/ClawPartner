@@ -248,7 +248,7 @@ function buildVolumeMounts(
  * CLAUDE_CODE_OAUTH_TOKEN is intentionally omitted to prevent OAuth fallback.
  */
 function readSecrets(provider: LlmProvider = 'claude'): Record<string, string> {
-  // Common credentials needed by feishu-cli skills inside every container
+  // Feishu/Lark credentials needed by lark-mcp inside every container
   const feishuKeys = ['FEISHU_APP_ID', 'FEISHU_APP_SECRET'];
 
   if (provider === 'kimi') {
