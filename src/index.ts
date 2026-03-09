@@ -4,7 +4,6 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   GROUPS_DIR,
-  HEARTBEAT_INTERVAL_MS,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   STREAM_PROGRESS,
@@ -331,26 +330,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  // Heartbeat timer: fallback for when agent is silent for a long time
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  const heartbeatStart = Date.now();
-
-  const stopHeartbeat = () => {
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
-  };
-
-  const resetHeartbeat = () => {
-    stopHeartbeat();
-    if (!HEARTBEAT_INTERVAL_MS) return;
-    heartbeatTimer = setInterval(async () => {
-      const mins = Math.round((Date.now() - heartbeatStart) / 60_000);
-      await ctxSend(`⏳ 任务仍在处理中（已用时约 ${mins} 分钟）`);
-    }, HEARTBEAT_INTERVAL_MS);
-  };
-
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
@@ -403,15 +382,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       : resultText;
   };
 
-  resetHeartbeat();
-
   const output = await runAgent(
     group,
     prompt,
     chatJid,
     async (result) => {
       if (result.status === 'progress') {
-        resetHeartbeat();
         if (!result.result) return;
 
         progressLines.push(result.result);
@@ -574,11 +550,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
       if (result.status === 'success') {
         queue.notifyIdle(chatJid);
-        stopHeartbeat();
       }
       if (result.status === 'error') {
         hadError = true;
-        stopHeartbeat();
       }
     },
     sessionId,
@@ -587,7 +561,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
-  stopHeartbeat();
 
   // Close Cardkit streaming mode if it wasn't already closed in the callback
   const pendingStreamId = streamingCardId ?? progressMessageId;
