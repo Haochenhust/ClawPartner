@@ -148,6 +148,8 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+  // Collect all progress lines to merge into a single message
+  const progressLines: string[] = [];
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
@@ -184,9 +186,8 @@ async function runTask(
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
-          result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          // Collect progress lines, don't send individually
+          progressLines.push(streamedOutput.result);
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -203,8 +204,14 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      // Messages are sent via MCP tool (IPC), result text is just logged
+      // Final result from container output
       result = output.result;
+    }
+
+    // Merge all progress lines and send as a single message
+    const mergedContent = progressLines.join('\n\n');
+    if (mergedContent) {
+      await deps.sendMessage(task.chat_jid, mergedContent);
     }
 
     logger.info(
