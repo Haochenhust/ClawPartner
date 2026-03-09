@@ -364,6 +364,33 @@ export async function processTaskIpc(
       setTimeout(() => process.exit(0), 3000);
       break;
 
+    case 'update_task_schedule':
+      // Allow updating task schedule (next_run time)
+      if (data.taskId && data.schedule_value) {
+        const task = getTaskById(data.taskId);
+        if (task && (isMain || task.group_folder === sourceGroup)) {
+          const scheduled = new Date(data.schedule_value);
+          if (!isNaN(scheduled.getTime())) {
+            updateTask(data.taskId, { next_run: scheduled.toISOString() });
+            logger.info(
+              { taskId: data.taskId, nextRun: data.schedule_value, sourceGroup },
+              'Task schedule updated via IPC',
+            );
+          } else {
+            logger.warn(
+              { taskId: data.taskId, scheduleValue: data.schedule_value },
+              'Invalid timestamp for update_task_schedule',
+            );
+          }
+        } else {
+          logger.warn(
+            { taskId: data.taskId, sourceGroup },
+            'Unauthorized task schedule update attempt',
+          );
+        }
+      }
+      break;
+
     case 'register_group':
       // Only main group can register new groups
       if (!isMain) {
